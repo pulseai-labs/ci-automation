@@ -43,7 +43,7 @@ These were configured once and cover every current and future repository:
 
 | Thing | Why it needs no per-project work |
 | --- | --- |
-| **GitHub App `pulseai-ci`** | Installed org-wide with `repository_selection: all`. Every repo created in the org from now on is covered the moment it exists. There is nothing to install, authorise, or configure for a new project. Granted: `metadata:read`, `contents:read`, `issues:write`, `pull_requests:write`, `actions:write` — see "App permissions" below for why each is needed. |
+| **GitHub App `pulseai-ci`** (worker) | Installed org-wide, `repository_selection: all`. Every repo created from now on is covered the moment it exists. Nothing to install or configure per project. |
 | **Runner group membership** | `mac-mini-private` is `visibility: all` + `allows_public_repositories: false`, so every **private** repo — including ones created tomorrow — can already use the runner. No allowlist to edit. |
 | **Runner credentials** | The App key lives root-owned on the runner. Jobs mint 1-hour scoped tokens through a root helper. No repo secret, no deploy key, no PAT anywhere. |
 | **droid model + auth** | Configured once for the `github-runner` account on the mini. |
@@ -52,7 +52,25 @@ These were configured once and cover every current and future repository:
 the runner group for a new project, stop — you are working against the design.**
 The only legitimate exceptions are listed under "Genuine per-project friction".
 
-### App permissions, and why each one
+### Two apps, and why
+
+One credential **must** live in a public repository's secrets, because a
+GitHub-hosted trigger job cannot read the key on the mini. That makes it the
+most exposed thing in the design — so it is also the least powerful.
+
+| | `pulseai-ci` (**worker**) | `pulseai-ci-dispatch` (**doorbell**) |
+| --- | --- | --- |
+| Permissions | `contents:read`, `issues:write`, `pull_requests:write`, `metadata:read` | **`actions:write`, `metadata:read` — nothing else** |
+| Installed on | all repositories | the private twins only |
+| Key lives | `/usr/local/etc/pulseai-ci/app.pem` on the runner, `root:wheel 0400`. **Never in GitHub.** | a secret in each **public** canonical repo |
+| Used by | the runner, via a root mint helper | the hosted trigger job |
+| If exfiltrated | needs root on the mini first | can trigger QA workflows. Cannot read code, comment, or push. |
+
+**Never put the worker key in a repository secret.** A single app holding both
+roles was the original design; it was corrected after review found the key was
+exfiltratable by any collaborator able to push a branch.
+
+### Why each worker permission
 
 | Permission | Needed for |
 | --- | --- |
@@ -60,7 +78,7 @@ The only legitimate exceptions are listed under "Genuine per-project friction".
 | `contents: read` | Checking out the skills repo and the analysis target. |
 | `issues: write` | Commenting on an **issue**. |
 | `pull_requests: write` | Commenting on a **pull request**. Not optional and not covered by `issues:write` — GitHub gates on the RESOURCE, not the endpoint, even though the path `/issues/{n}/comments` is shared. A token with only `issues:write` gets `403 Resource not accessible by integration` on a PR. |
-| `actions: write` | `workflow_dispatch` into the private twin (Pattern B). |
+| `actions: write` (dispatch app) | `workflow_dispatch` into the private twin. Deliberately NOT `contents: write`, which `repository_dispatch` would require and which is push access for an App. |
 
 Two rules that cost real debugging time:
 
@@ -191,12 +209,11 @@ jobs:
       - uses: actions/create-github-app-token@v3
         id: token
         with:
-          app-id: ${{ vars.PULSEAI_CI_APP_ID }}
-          private-key: ${{ secrets.PULSEAI_CI_PRIVATE_KEY }}
+          app-id: ${{ vars.PULSEAI_DISPATCH_APP_ID }}
+          private-key: ${{ secrets.PULSEAI_DISPATCH_PRIVATE_KEY }}
           owner: pulseai-labs
           repositories: pulsedb-internal
           permission-actions: write
-          permission-contents: read
       - env:
           GH_TOKEN: ${{ steps.token.outputs.token }}
           SHA: ${{ github.event.pull_request.head.sha }}
@@ -258,8 +275,8 @@ Everything else is automatic. These are not:
 1. **The caller workflow file** — one file, ~8 lines.
 2. **Curated skills** — the actual work, and the point. Not shareable.
 3. **The hub SHA pin** — see below.
-4. **Pattern B only:** the App ID variable + private key secret on the public
-   repo, and the mint-helper allowlist entry.
+4. **Pattern B only:** the **dispatch** App ID variable + private key secret on
+   the public repo, and the mint-helper allowlist entry. Never the worker key.
 
 ---
 
@@ -307,6 +324,8 @@ not rediscover them.
 | --- | --- |
 | `403 Resource not accessible by integration` on dispatch | Used `repository_dispatch` (needs `contents: write`) instead of `workflow_dispatch` (needs `actions: write`). |
 | `403` posting a PR comment with `issues: write` | A PR needs `pull_requests: write`. The shared `/issues/{n}/comments` path does not mean shared permissions. |
+| `must be set to a non-empty string` from create-github-app-token | The variable or secret is missing, or you referenced the worker names (`PULSEAI_CI_*`) instead of the dispatch names (`PULSEAI_DISPATCH_*`). |
+| Hard error requesting `permission-contents` on the dispatch app | It has no `contents` permission at all. Request only what the app holds. |
 | Permission added to the App but still 403 | The installation never approved the pending request. |
 | `fatal: remote error: upload-pack: not our ref` | Used `github.workflow_sha` (the CALLER's commit) where `github.job_workflow_sha` (this workflow's commit) was needed. |
 | Step fails with a bare exit code and no message | `curl -sf` — `-s` hides the error, `-f` hides the response body. Use `--show-error` and print the HTTP code. |
