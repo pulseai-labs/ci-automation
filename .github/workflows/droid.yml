@@ -287,10 +287,37 @@ jobs:
           trap 'curl -s -o /dev/null -X DELETE -H "Authorization: token $TOK" https://api.github.com/installation/token || true' EXIT
           BODY="$(printf '### droid %s\n\n<details><summary>report</summary>\n\n```\n%s\n```\n\n</details>\n' \
                   "$AUTOMATION" "$(tail -c 55000 "$F" 2>/dev/null || echo 'no output')")"
-          jq -n --arg b "$BODY" '{body:$b}' \
-            | curl -sf -X POST -H "Authorization: token $TOK" -H "Accept: application/vnd.github+json" \
-                   -d @- "https://api.github.com/repos/${COMMENT_ON}/issues/${COMMENT_ISSUE}/comments" \
-                   -o /dev/null
+
+          # This host is on a weak Wi-Fi link (~-75 dBm, ~3 dB SNR). A previous
+          # run died with curl exit 56 (CURLE_RECV_ERROR) mid-response, and
+          # `curl -sf` silenced the only diagnostic that would have explained
+          # it. So: retry transient failures, and always surface the HTTP code
+          # and response body on failure.
+          jq -n --arg b "$BODY" '{body:$b}' >/tmp/droid-comment-$$.json
+          RC=0
+          CODE="$(curl --show-error --silent --output /tmp/droid-comment-resp-$$.txt \
+                  --write-out '%{http_code}' \
+                  --retry 4 --retry-delay 3 --retry-all-errors \
+                  --connect-timeout 15 --max-time 60 \
+                  -X POST -H "Authorization: token $TOK" \
+                  -H "Accept: application/vnd.github+json" \
+                  -d @/tmp/droid-comment-$$.json \
+                  "https://api.github.com/repos/${COMMENT_ON}/issues/${COMMENT_ISSUE}/comments")" || RC=$?
+          rm -f /tmp/droid-comment-$$.json
+
+          if [ "$RC" -ne 0 ]; then
+            echo "::warning::curl failed with exit $RC after retries (56 = receive error, usually the Wi-Fi link)"
+            head -c 400 /tmp/droid-comment-resp-$$.txt 2>/dev/null || true
+            rm -f /tmp/droid-comment-resp-$$.txt
+            exit 1
+          fi
+          if [ "$CODE" != "201" ]; then
+            echo "::warning::GitHub returned HTTP $CODE"
+            head -c 400 /tmp/droid-comment-resp-$$.txt 2>/dev/null || true
+            rm -f /tmp/droid-comment-resp-$$.txt
+            exit 1
+          fi
+          rm -f /tmp/droid-comment-resp-$$.txt
           echo "comment posted to ${COMMENT_ON}#${COMMENT_ISSUE}"
 
       # _work is not wiped between jobs. Leave nothing for the next one.
