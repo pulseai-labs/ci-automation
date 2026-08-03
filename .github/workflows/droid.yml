@@ -276,6 +276,7 @@ jobs:
           AUTOMATION: ${{ matrix.automation }}
           COMMENT_ON: ${{ needs.validate.outputs.comment_on }}
           COMMENT_ISSUE: ${{ needs.validate.outputs.comment_issue }}
+          MODEL: ${{ needs.validate.outputs.model }}
         run: |
           set -euo pipefail
           F="report/${AUTOMATION}.md"
@@ -285,14 +286,34 @@ jobs:
           fi
           TOK="$(sudo -n /usr/local/libexec/pulseai-mint-token comment-token "$COMMENT_ON")"
           trap 'curl -s -o /dev/null -X DELETE -H "Authorization: token $TOK" https://api.github.com/installation/token || true' EXIT
-          BODY="$(printf '### droid %s\n\n<details><summary>report</summary>\n\n```\n%s\n```\n\n</details>\n' \
-                  "$AUTOMATION" "$(tail -c 55000 "$F" 2>/dev/null || echo 'no output')")"
+          # droid emits markdown. Wrapping it in a code fence — which an
+          # earlier version did — renders headings, bold and lists as literal
+          # text and is the reason these comments were unreadable. Render it as
+          # markdown, and surface the verdict in the heading and the <summary>
+          # so the outcome is visible without expanding.
+          REPORT="$(cat "$F")"
 
-          # This host is on a weak Wi-Fi link (~-75 dBm, ~3 dB SNR). A previous
-          # run died with curl exit 56 (CURLE_RECV_ERROR) mid-response, and
-          # `curl -sf` silenced the only diagnostic that would have explained
-          # it. So: retry transient failures, and always surface the HTTP code
-          # and response body on failure.
+          # Strip any closing </details> the report might contain, which would
+          # otherwise break out of the collapsible block.
+          REPORT="$(printf '%s' "$REPORT" | sed 's#</details>##g')"
+
+          VERDICT="$(printf '%s' "$REPORT" \
+            | grep -ioE '(VERDICT|Verdict)[: ]+[A-Z][A-Z_-]*' \
+            | head -1 | grep -oE '[A-Z][A-Z_-]*$' || true)"
+          case "$VERDICT" in
+            PASS)          ICON='✅' ;;
+            FAIL|FAILED)   ICON='❌' ;;
+            INCONCLUSIVE)  ICON='⚠️' ;;
+            *)             ICON='🤖'; VERDICT='report' ;;
+          esac
+
+          RUN_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+
+          # A blank line after <summary> is required for GitHub to render
+          # markdown inside <details>.
+          BODY="$(printf '## %s droid %s — %s\n\n<details>\n<summary><b>Full report</b></summary>\n\n%s\n\n</details>\n\n<sub>model <code>%s</code> · <a href="%s">run log</a> · reported by the self-hosted runner</sub>\n' \
+                  "$ICON" "$AUTOMATION" "$VERDICT" "$REPORT" "$MODEL" "$RUN_URL")"
+
           jq -n --arg b "$BODY" '{body:$b}' >/tmp/droid-comment-$$.json
           RC=0
           CODE="$(curl --show-error --silent --output /tmp/droid-comment-resp-$$.txt \
