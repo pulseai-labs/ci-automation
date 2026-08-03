@@ -323,6 +323,53 @@ and open a PR.
 
 ---
 
+## Making an automation a merge gate
+
+By default an automation is **advisory**: it posts a comment. In Pattern B it
+cannot be a status check on its own, because the job runs in the private twin
+and its checks appear there, not on the public PR.
+
+To gate merges, add one input:
+
+```yaml
+    with:
+      automations: qa
+      target-repo: pulseai-labs/PulseDB
+      target-ref: ${{ inputs.sha }}
+      comment-on: pulseai-labs/PulseDB
+      comment-issue: ${{ inputs.pr }}
+      report-status: true          # <- makes it a gate
+```
+
+The hub then posts a commit status to `comment-on` at `target-ref`, with the
+context **`droid/<automation>`** — so `droid/qa`, `droid/code-review`,
+`droid/security-audit`.
+
+This is generic. It is not specific to PulseDB or to QA: any repo, any
+automation, one boolean.
+
+**Add the context to branch protection only after seeing it on a real run.** A
+required context that never appears freezes the branch permanently, and
+`enforce_admins` makes that unrecoverable without an org owner.
+
+Four properties worth knowing before you turn it on:
+
+- **`pending` is posted before any work**, so the PR shows the gate immediately
+  rather than showing a missing check while the single runner drains its queue.
+- **The final status is posted under `always()`.** If the job crashes, the gate
+  resolves to failure rather than sitting on `pending` forever. A gate that can
+  hang is worse than no gate.
+- **`INCONCLUSIVE` is a pass.** "No library code changed in this diff" must not
+  block a merge. Only an explicit `FAIL` verdict, or a crashed job, fails it.
+- **The `droid/` prefix is deliberate.** `Security Audit` already exists as a
+  required Actions-pinned context in some repos (cargo-deny). `droid/security-audit`
+  cannot collide with it.
+
+Requires `statuses: write` on the worker App and the target repo in the
+`status-token` allowlist in `install-mint-helper.sh`.
+
+---
+
 ## Traps already hit in production
 
 Each of these cost real debugging time. They are recorded so the next agent does
@@ -340,6 +387,8 @@ not rediscover them.
 | `curl` exit 56 mid-run | `CURLE_RECV_ERROR`. The runner is on a weak Wi-Fi link; retry transient failures. |
 | droid: "No custom models configured" | `FACTORY_HOME_OVERRIDE` must be the HOME directory, the **parent** of `.factory`. |
 | Job queues forever | The repo is public — public repos cannot use the runner. Use Pattern B. |
+| PR stuck on a pending `droid/*` check | The job died before its final-status step. It runs under `always()`, so this means the runner itself vanished. Check the daemon. |
+| Required check never appears | The context name was guessed. Reusable-workflow job checks are `<caller job> / <called job>`; the commit statuses this hub posts are `droid/<automation>`. Read one from a real run first. |
 
 ---
 

@@ -49,6 +49,13 @@ on:
         description: 'droid model id as configured on the runner.'
         type: string
         default: 'custom:glm-5.2-0'
+      report-status:
+        description: >-
+          Post a commit status to `comment-on` at `target-ref`, making this
+          automation a merge gate rather than an advisory comment. Requires
+          target-ref to be a 40-hex SHA. Context is `droid/<automation>`.
+        type: boolean
+        default: false
       timeout-minutes:
         description: 'Hard cap per automation.'
         type: number
@@ -84,6 +91,7 @@ jobs:
           IN_COMMENT_ON: ${{ inputs.comment-on }}
           IN_COMMENT_ISSUE: ${{ inputs.comment-issue }}
           IN_MODEL: ${{ inputs.model }}
+          IN_REPORT_STATUS: ${{ inputs.report-status }}
         run: |
           set -euo pipefail
           fail() { echo "::error::$1"; exit 1; }
@@ -128,6 +136,14 @@ jobs:
             fail "comment-on set without comment-issue"
           fi
 
+          # A commit status attaches to a specific commit, so a branch name will
+          # not do. Fail closed rather than posting a status nobody can see.
+          if [ "$IN_REPORT_STATUS" = "true" ]; then
+            [ -n "$IN_COMMENT_ON" ] || fail "report-status needs comment-on (the repo to report to)"
+            printf '%s' "$IN_TARGET_REF" | grep -Eq '^[0-9a-f]{40}$' \
+              || fail "report-status needs target-ref to be a 40-hex SHA, got '''$IN_TARGET_REF'''"
+          fi
+
           {
             printf 'automations=["%s"]\n' "$(printf '%s' "$LIST" | sed 's/,/","/g')"
             printf 'target_repo=%s\n'   "$IN_TARGET_REPO"
@@ -151,6 +167,27 @@ jobs:
       contents: read
 
     steps:
+      # Posted BEFORE any work, so a PR shows the gate as in-progress rather
+      # than as a missing check while the single runner drains its queue.
+      - name: Report status pending
+        if: inputs.report-status
+        shell: bash
+        env:
+          AUTOMATION: ${{ matrix.automation }}
+          STATUS_REPO: ${{ needs.validate.outputs.comment_on }}
+          STATUS_SHA: ${{ needs.validate.outputs.target_ref }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          TOK="$(sudo -n /usr/local/libexec/pulseai-mint-token status-token "$STATUS_REPO")"
+          trap 'curl -s -o /dev/null -X DELETE -H "Authorization: token $TOK" https://api.github.com/installation/token || true' EXIT
+          jq -n --arg c "droid/$AUTOMATION" --arg u "$RUN_URL" \
+             '{state:"pending",context:$c,target_url:$u,description:"running on the self-hosted runner"}' \
+            | curl -sS --retry 3 --retry-all-errors -o /dev/null -X POST \
+                   -H "Authorization: token $TOK" -H "Accept: application/vnd.github+json" \
+                   -d @- "https://api.github.com/repos/$STATUS_REPO/statuses/$STATUS_SHA"
+          echo "posted droid/$AUTOMATION = pending"
+
       # The hub itself: prompts, pinned to the exact commit of THIS reusable
       # workflow. Must be job_workflow_sha, not workflow_sha: the latter is the
       # CALLER's commit, which does not exist in this repository — checking it
@@ -340,6 +377,45 @@ jobs:
           fi
           rm -f /tmp/droid-comment-resp-$$.txt
           echo "comment posted to ${COMMENT_ON}#${COMMENT_ISSUE}"
+
+      # always(): if this step is skipped the PR sits on `pending` forever and
+      # the branch is unmergeable with no indication why. A gate that can hang
+      # is worse than no gate.
+      - name: Report status final
+        if: always() && inputs.report-status
+        shell: bash
+        env:
+          AUTOMATION: ${{ matrix.automation }}
+          STATUS_REPO: ${{ needs.validate.outputs.comment_on }}
+          STATUS_SHA: ${{ needs.validate.outputs.target_ref }}
+          STEP_RC: ${{ steps.run.outputs.rc }}
+          JOB_STATUS: ${{ job.status }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          F="report/${AUTOMATION}.md"
+          VERDICT="$(grep -ioE '(VERDICT|Verdict)[: ]+[A-Z][A-Z_-]*' "$F" 2>/dev/null \
+                     | head -1 | grep -oE '[A-Z][A-Z_-]*$' || true)"
+
+          # The agent's own verdict decides the gate where it gave one; the job
+          # outcome decides otherwise. INCONCLUSIVE is deliberately NOT a
+          # failure — "no library code changed" must not block a merge.
+          case "${VERDICT:-}" in
+            PASS)          STATE=success; DESC="PASS" ;;
+            FAIL|FAILED)   STATE=failure; DESC="FAIL — see the report comment" ;;
+            INCONCLUSIVE)  STATE=success; DESC="inconclusive (not applicable to this diff)" ;;
+            *) if [ "$JOB_STATUS" = "success" ]; then STATE=success; DESC="completed";
+               else STATE=failure; DESC="job ${JOB_STATUS}"; fi ;;
+          esac
+
+          TOK="$(sudo -n /usr/local/libexec/pulseai-mint-token status-token "$STATUS_REPO")"
+          trap 'curl -s -o /dev/null -X DELETE -H "Authorization: token $TOK" https://api.github.com/installation/token || true' EXIT
+          jq -n --arg s "$STATE" --arg c "droid/$AUTOMATION" --arg u "$RUN_URL" --arg d "$DESC" \
+             '{state:$s,context:$c,target_url:$u,description:$d}' \
+            | curl -sS --retry 3 --retry-all-errors -o /dev/null -X POST \
+                   -H "Authorization: token $TOK" -H "Accept: application/vnd.github+json" \
+                   -d @- "https://api.github.com/repos/$STATUS_REPO/statuses/$STATUS_SHA"
+          echo "posted droid/$AUTOMATION = $STATE ($DESC)"
 
       # _work is not wiped between jobs. Leave nothing for the next one.
       - name: Clean workspace
