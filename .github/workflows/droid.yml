@@ -1,0 +1,293 @@
+name: Droid Automation
+
+# Reusable workflow: the single orchestration artifact for every droid-driven
+# automation across pulseai-labs. See ADR-0001 in draco-hub-macos-server.
+#
+# This repository is PUBLIC by necessity, not preference: a public repo can only
+# consume reusable workflows from public repos, and no Access setting on a
+# private repo overrides that. It carries no secrets — credentials are minted on
+# the runner from a root-owned key the runner itself cannot read.
+#
+# INPUT HANDLING
+# Every input is treated as hostile. On the repository_dispatch path these
+# values originate in client_payload, which is attacker-settable by anyone
+# holding the dispatch credential. So:
+#   - inputs are never interpolated directly into `run:` — they go through env:
+#   - inputs used as a checkout `ref:` are pattern-validated first and the job
+#     fails closed on anything unexpected
+#   - the validation step runs before any checkout of untrusted content
+# See: https://securitylab.github.com/resources/github-actions-preventing-pwn-requests/
+
+on:
+  workflow_call:
+    inputs:
+      automations:
+        description: 'Comma-separated: qa, code-review, security-audit'
+        type: string
+        required: true
+      target-repo:
+        description: 'owner/repo to analyse. Empty = the calling repository.'
+        type: string
+        default: ''
+      target-ref:
+        description: 'SHA or ref of the target to check out.'
+        type: string
+        default: ''
+      comment-on:
+        description: 'owner/repo to post the report to. Empty = no comment.'
+        type: string
+        default: ''
+      comment-issue:
+        description: 'PR or issue number to comment on.'
+        type: string
+        default: ''
+      runner:
+        description: 'runs-on value. Defaults to the mac mini.'
+        type: string
+        default: 'self-hosted'
+      model:
+        description: 'droid model id as configured on the runner.'
+        type: string
+        default: 'custom:glm-5.2-0'
+      timeout-minutes:
+        description: 'Hard cap per automation.'
+        type: number
+        default: 25
+
+# One runner, one job at a time. Without this, three automations across
+# fourteen repos would serialize into hours and start hitting GitHub's 24h
+# queue cancellation.
+concurrency:
+  group: droid-${{ github.repository }}-${{ inputs.target-ref || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    name: validate inputs
+    runs-on: ubuntu-latest
+    outputs:
+      automations: ${{ steps.v.outputs.automations }}
+      target_repo: ${{ steps.v.outputs.target_repo }}
+      target_ref: ${{ steps.v.outputs.target_ref }}
+      comment_on: ${{ steps.v.outputs.comment_on }}
+      comment_issue: ${{ steps.v.outputs.comment_issue }}
+      model: ${{ steps.v.outputs.model }}
+    steps:
+      # Runs on a hosted runner, before the mini is involved at all, and before
+      # any untrusted content is checked out. Fails closed.
+      - id: v
+        shell: bash
+        env:
+          IN_AUTOMATIONS: ${{ inputs.automations }}
+          IN_TARGET_REPO: ${{ inputs.target-repo }}
+          IN_TARGET_REF: ${{ inputs.target-ref }}
+          IN_COMMENT_ON: ${{ inputs.comment-on }}
+          IN_COMMENT_ISSUE: ${{ inputs.comment-issue }}
+          IN_MODEL: ${{ inputs.model }}
+        run: |
+          set -euo pipefail
+          fail() { echo "::error::$1"; exit 1; }
+
+          # Allowlist, not a denylist. Anything unrecognised stops the run.
+          LIST=""
+          IFS=','
+          for a in $IN_AUTOMATIONS; do
+            a="$(printf '%s' "$a" | tr -d '[:space:]')"
+            [ -n "$a" ] || continue
+            case "$a" in
+              qa|code-review|security-audit) ;;
+              *) fail "unknown automation '$a'" ;;
+            esac
+            LIST="${LIST:+$LIST,}$a"
+          done
+          unset IFS
+          [ -n "$LIST" ] || fail "no valid automations requested"
+
+          # owner/repo, conservative charset.
+          for v in "$IN_TARGET_REPO" "$IN_COMMENT_ON"; do
+            [ -z "$v" ] && continue
+            printf '%s' "$v" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*$' \
+              || fail "malformed repository '$v'"
+          done
+
+          # A ref becomes a checkout target, so it is the highest-risk input.
+          # 40-hex SHA, or a conservative branch/tag charset. No spaces, no
+          # shell metacharacters, no leading dash, no '..'.
+          if [ -n "$IN_TARGET_REF" ]; then
+            printf '%s' "$IN_TARGET_REF" | grep -Eq '^([0-9a-f]{40}|[A-Za-z0-9][A-Za-z0-9._/-]{0,254})$' \
+              || fail "malformed ref"
+            case "$IN_TARGET_REF" in *..*) fail "ref may not contain '..'" ;; esac
+          fi
+
+          [ -z "$IN_COMMENT_ISSUE" ] || printf '%s' "$IN_COMMENT_ISSUE" | grep -Eq '^[0-9]{1,10}$' \
+            || fail "comment-issue must be numeric"
+
+          printf '%s' "$IN_MODEL" | grep -Eq '^[A-Za-z0-9:._-]{1,64}$' || fail "malformed model id"
+
+          if [ -n "$IN_COMMENT_ON" ] && [ -z "$IN_COMMENT_ISSUE" ]; then
+            fail "comment-on set without comment-issue"
+          fi
+
+          {
+            printf 'automations=["%s"]\n' "$(printf '%s' "$LIST" | sed 's/,/","/g')"
+            printf 'target_repo=%s\n'   "$IN_TARGET_REPO"
+            printf 'target_ref=%s\n'    "$IN_TARGET_REF"
+            printf 'comment_on=%s\n'    "$IN_COMMENT_ON"
+            printf 'comment_issue=%s\n' "$IN_COMMENT_ISSUE"
+            printf 'model=%s\n'         "$IN_MODEL"
+          } >>"$GITHUB_OUTPUT"
+          echo "validated: $LIST"
+
+  droid:
+    needs: validate
+    name: ${{ matrix.automation }}
+    runs-on: ${{ fromJSON(format('["{0}"]', inputs.runner)) }}
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    strategy:
+      fail-fast: false
+      matrix:
+        automation: ${{ fromJSON(needs.validate.outputs.automations) }}
+    permissions:
+      contents: read
+
+    steps:
+      # The hub itself: prompts, pinned to the exact commit of this workflow.
+      - name: Check out ci-automation
+        uses: actions/checkout@v5
+        with:
+          repository: pulseai-labs/ci-automation
+          ref: ${{ github.workflow_sha }}
+          path: .ci-automation
+          persist-credentials: false
+
+      # The calling repository, which owns the curated .factory/skills for this
+      # project. Skills are per-project and never installed globally.
+      - name: Check out skills (calling repository)
+        uses: actions/checkout@v5
+        with:
+          path: workspace
+          persist-credentials: false
+
+      # Untrusted content. The ref was validated above; persist-credentials is
+      # false so no token lands on disk next to attacker-authored files.
+      - name: Check out analysis target
+        if: needs.validate.outputs.target_repo != ''
+        uses: actions/checkout@v5
+        with:
+          repository: ${{ needs.validate.outputs.target_repo }}
+          ref: ${{ needs.validate.outputs.target_ref }}
+          path: workspace/target
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Resolve prompt and autonomy
+        id: cfg
+        shell: bash
+        env:
+          AUTOMATION: ${{ matrix.automation }}
+        run: |
+          set -euo pipefail
+          P=".ci-automation/prompts/${AUTOMATION}.md"
+          test -f "$P" || { echo "::error::missing prompt $P"; exit 1; }
+          echo "prompt=$P" >>"$GITHUB_OUTPUT"
+          # Autonomy is set centrally per automation so it cannot drift
+          # per-repo. Read-only analysers never receive write autonomy.
+          case "$AUTOMATION" in
+            qa)             echo "autonomy=medium" >>"$GITHUB_OUTPUT" ;;
+            code-review)    echo "autonomy=low"    >>"$GITHUB_OUTPUT" ;;
+            security-audit) echo "autonomy=low"    >>"$GITHUB_OUTPUT" ;;
+            *) echo "::error::unreachable"; exit 1 ;;
+          esac
+
+      - name: Verify curated skill is present
+        shell: bash
+        env:
+          AUTOMATION: ${{ matrix.automation }}
+          CALLER: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          D="workspace/.factory/skills/${AUTOMATION}"
+          if [ ! -d "$D" ]; then
+            echo "::error::no curated skill at $D in ${CALLER}."
+            echo "::error::Skills are per-project. Add one, or drop '${AUTOMATION}' from the automations input."
+            exit 1
+          fi
+          echo "found $(find workspace/.factory/skills -name SKILL.md | wc -l | tr -d ' ') SKILL.md file(s)"
+
+      # droid runs with NO GitHub credential in its environment. It reads
+      # attacker-influenceable text (diffs, PR bodies); a prompt injection that
+      # succeeds must find no token to exfiltrate and no write path to use.
+      - name: Run droid
+        id: run
+        shell: bash
+        working-directory: workspace
+        env:
+          AUTOMATION: ${{ matrix.automation }}
+          AUTONOMY: ${{ steps.cfg.outputs.autonomy }}
+          PROMPT: ${{ steps.cfg.outputs.prompt }}
+          MODEL: ${{ needs.validate.outputs.model }}
+          FACTORY_DISABLE_KEYRING: '1'
+          FACTORY_HOME_OVERRIDE: /Users/github-runner
+          FACTORY_DROID_AUTO_UPDATE_ENABLED: '0'
+          FACTORY_LOG_MAX_DAYS: '7'
+          FACTORY_LOG_MAX_TOTAL_BYTES: '268435456'
+        run: |
+          set -uo pipefail
+          unset GITHUB_TOKEN GH_TOKEN ACTIONS_ID_TOKEN_REQUEST_TOKEN ACTIONS_ID_TOKEN_REQUEST_URL
+          mkdir -p ../report
+          /usr/local/bin/droid exec \
+            --auto "$AUTONOMY" \
+            -m "$MODEL" \
+            --disable-builtin-skills \
+            -f "../$PROMPT" \
+            2>&1 | tee "../report/${AUTOMATION}.md"
+          echo "rc=${PIPESTATUS[0]}" >>"$GITHUB_OUTPUT"
+
+      - name: Publish report to the run summary
+        if: always()
+        shell: bash
+        env:
+          AUTOMATION: ${{ matrix.automation }}
+        run: |
+          F="report/${AUTOMATION}.md"
+          {
+            echo "## ${AUTOMATION}"
+            echo
+            if [ -s "$F" ]; then tail -c 60000 "$F"; else echo '_no output_'; fi
+          } >>"$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: droid-${{ matrix.automation }}
+          path: report/
+          retention-days: 14
+
+      # Cross-repo comment. GITHUB_TOKEN cannot do this — it is scoped to the
+      # calling repository. The token is minted by a root helper that accepts no
+      # permission arguments, used once, then revoked.
+      - name: Comment the report
+        if: always() && needs.validate.outputs.comment_on != ''
+        shell: bash
+        env:
+          AUTOMATION: ${{ matrix.automation }}
+          COMMENT_ON: ${{ needs.validate.outputs.comment_on }}
+          COMMENT_ISSUE: ${{ needs.validate.outputs.comment_issue }}
+        run: |
+          set -euo pipefail
+          TOK="$(sudo -n /usr/local/libexec/pulseai-mint-token comment-token "$COMMENT_ON")"
+          trap 'curl -s -o /dev/null -X DELETE -H "Authorization: token $TOK" https://api.github.com/installation/token || true' EXIT
+          F="report/${AUTOMATION}.md"
+          BODY="$(printf '### droid %s\n\n<details><summary>report</summary>\n\n```\n%s\n```\n\n</details>\n' \
+                  "$AUTOMATION" "$(tail -c 55000 "$F" 2>/dev/null || echo 'no output')")"
+          jq -n --arg b "$BODY" '{body:$b}' \
+            | curl -sf -X POST -H "Authorization: token $TOK" -H "Accept: application/vnd.github+json" \
+                   -d @- "https://api.github.com/repos/${COMMENT_ON}/issues/${COMMENT_ISSUE}/comments" \
+                   -o /dev/null
+          echo "comment posted to ${COMMENT_ON}#${COMMENT_ISSUE}"
+
+      # _work is not wiped between jobs. Leave nothing for the next one.
+      - name: Clean workspace
+        if: always()
+        shell: bash
+        run: rm -rf workspace report .ci-automation || true
