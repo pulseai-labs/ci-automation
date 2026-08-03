@@ -10,6 +10,12 @@ repository overrides that. Since some callers are public, the hub must be too.
 It contains **no secrets**. Credentials are minted on the runner from a
 root-owned GitHub App key that the runner itself cannot read.
 
+## Onboarding a project
+
+**Read [AGENTS.md](AGENTS.md)** — it covers the single-repo pattern, the
+dual-repo pattern for public projects, what is automatic for new repos, and the
+exact per-project cost. Written for an agent working without prior context.
+
 ## Using it
 
 Add one file to a repository:
