@@ -43,7 +43,7 @@ These were configured once and cover every current and future repository:
 
 | Thing | Why it needs no per-project work |
 | --- | --- |
-| **GitHub App `pulseai-ci`** | Installed org-wide with `repository_selection: all`. Every repo created in the org from now on is covered the moment it exists. There is nothing to install, authorise, or configure for a new project. |
+| **GitHub App `pulseai-ci`** | Installed org-wide with `repository_selection: all`. Every repo created in the org from now on is covered the moment it exists. There is nothing to install, authorise, or configure for a new project. Granted: `metadata:read`, `contents:read`, `issues:write`, `pull_requests:write`, `actions:write` — see "App permissions" below for why each is needed. |
 | **Runner group membership** | `mac-mini-private` is `visibility: all` + `allows_public_repositories: false`, so every **private** repo — including ones created tomorrow — can already use the runner. No allowlist to edit. |
 | **Runner credentials** | The App key lives root-owned on the runner. Jobs mint 1-hour scoped tokens through a root helper. No repo secret, no deploy key, no PAT anywhere. |
 | **droid model + auth** | Configured once for the `github-runner` account on the mini. |
@@ -51,6 +51,31 @@ These were configured once and cover every current and future repository:
 **If you find yourself creating a deploy key, adding a repo secret, or editing
 the runner group for a new project, stop — you are working against the design.**
 The only legitimate exceptions are listed under "Genuine per-project friction".
+
+### App permissions, and why each one
+
+| Permission | Needed for |
+| --- | --- |
+| `metadata: read` | Mandatory on every App. |
+| `contents: read` | Checking out the skills repo and the analysis target. |
+| `issues: write` | Commenting on an **issue**. |
+| `pull_requests: write` | Commenting on a **pull request**. Not optional and not covered by `issues:write` — GitHub gates on the RESOURCE, not the endpoint, even though the path `/issues/{n}/comments` is shared. A token with only `issues:write` gets `403 Resource not accessible by integration` on a PR. |
+| `actions: write` | `workflow_dispatch` into the private twin (Pattern B). |
+
+Two rules that cost real debugging time:
+
+1. **Editing the App does not grant the permission.** It raises a *pending
+   request* that each installation must approve separately, at
+   `https://github.com/organizations/pulseai-labs/settings/installations/150884244`.
+   Until then the installation keeps its old set. Check with:
+   `gh api /orgs/pulseai-labs/installations --jq '.installations[]|select(.app_slug=="pulseai-ci")|.permissions'`
+2. **Never grant `contents: write`** to reach for a shortcut. For an App that is
+   push access to all installed repos, and this App reads attacker-authored
+   diffs. If something genuinely needs to write code, it belongs in a separate
+   App with a separate key.
+
+Requesting a permission the installation lacks is a **hard error at mint time**,
+never a silent downgrade — so these mistakes surface as clean 403s.
 
 ---
 
@@ -107,7 +132,7 @@ and the public repo only *asks* it to.
 ```
 PulseDB (public)                    pulsedb-internal (private)
   qa-trigger.yml                      droid.yml
-  on: pull_request                    on: repository_dispatch
+  on: pull_request                    on: workflow_dispatch
   runs-on: ubuntu-latest      ──────► runs-on: self-hosted
   mints App token, dispatches         calls the hub, checks out PulseDB
                                       at the dispatched SHA, comments back
@@ -120,23 +145,31 @@ PulseDB (public)                    pulsedb-internal (private)
 ```yaml
 name: Droid Automations
 on:
-  repository_dispatch:
-    types: [droid-qa]
   workflow_dispatch:
+    inputs:
+      sha: { description: 'Commit SHA to analyse', required: true }
+      pr:  { description: 'PR number to comment on', required: true }
 jobs:
-  droid:
+  qa:
     uses: pulseai-labs/ci-automation/.github/workflows/droid.yml@<40-char-sha>
     with:
       automations: qa
       target-repo: pulseai-labs/PulseDB
-      target-ref: ${{ github.event.client_payload.sha }}
+      target-ref: ${{ inputs.sha }}
       comment-on: pulseai-labs/PulseDB
-      comment-issue: ${{ github.event.client_payload.pr }}
+      comment-issue: ${{ inputs.pr }}
 ```
 
+**Use `workflow_dispatch`, not `repository_dispatch`.** Both trigger the twin,
+but `POST /repos/{}/dispatches` requires the App permission `contents: write` —
+and for a GitHub App that grant **is push access to every repo it is installed
+on**. `POST /actions/workflows/{}/dispatches` needs only `actions: write`,
+which cannot modify code. Verified the hard way: the dispatch path returned
+`403 Resource not accessible by integration` until it was switched.
+
 The hub validates `target-ref` and `comment-issue` on a hosted runner before the
-mini is touched, so a malformed or hostile `client_payload` fails closed. Do not
-add your own interpolation of `client_payload` into a `run:` block.
+mini is touched, so malformed or hostile inputs fail closed. Do not add your own
+interpolation of workflow inputs into a `run:` block — pass them via `env:`.
 
 **Step 3.** In the **public** repo, `.github/workflows/qa-trigger.yml`:
 
@@ -162,15 +195,20 @@ jobs:
           private-key: ${{ secrets.PULSEAI_CI_PRIVATE_KEY }}
           owner: pulseai-labs
           repositories: pulsedb-internal
+          permission-actions: write
+          permission-contents: read
       - env:
           GH_TOKEN: ${{ steps.token.outputs.token }}
           SHA: ${{ github.event.pull_request.head.sha }}
           PR: ${{ github.event.pull_request.number }}
         run: |
-          gh api -X POST /repos/pulseai-labs/pulsedb-internal/dispatches \
-            -f event_type=droid-qa \
-            -F "client_payload[sha]=$SHA" \
-            -F "client_payload[pr]=$PR"
+          printf '%s' "$SHA" | grep -Eq '^[0-9a-f]{40}$' || { echo "::error::bad sha"; exit 1; }
+          printf '%s' "$PR"  | grep -Eq '^[0-9]{1,10}$'  || { echo "::error::bad pr"; exit 1; }
+          gh api -X POST \
+            /repos/pulseai-labs/pulsedb-internal/actions/workflows/droid.yml/dispatches \
+            -f ref=master \
+            -f "inputs[sha]=$SHA" \
+            -f "inputs[pr]=$PR"
 ```
 
 **Step 4 — the one real per-project cost.** The public repo needs
@@ -236,14 +274,15 @@ hardware; anyone who can move the tag can run anything on the mini. Note also
 that private repos on the Free plan have **no branch protection and no
 rulesets**, so nothing reviews a SHA bump — treat it as a trusted operation.
 
-Current: `9719dad8a3f2edef6c42faa6e1996a11d55e7743`
-
-To bump everywhere:
+**Do not trust a SHA written in this file.** It lives in the repo whose SHA it
+documents, so every commit here invalidates it. Always resolve the current one:
 
 ```bash
-NEW=$(gh api /repos/pulseai-labs/ci-automation/commits/main --jq .sha)
-# then update each consumer's uses: line and open a PR per repo
+gh api /repos/pulseai-labs/ci-automation/commits/main --jq .sha
 ```
+
+To bump a consumer, replace the 40-char SHA on its `uses:` line with that value
+and open a PR.
 
 ---
 
@@ -256,6 +295,24 @@ NEW=$(gh api /repos/pulseai-labs/ci-automation/commits/main --jq .sha)
 | `malformed ref` / `unknown automation` | The input validator rejected hostile or malformed input. Fix the caller; do not weaken the validator. |
 | `repository not permitted` from the mint helper | The comment target is not in the helper's allowlist. Add it as root on the runner (Step 5). |
 | droid reports "No custom models configured" | `FACTORY_HOME_OVERRIDE` is wrong. It is the HOME directory — the **parent** of `.factory`, not `.factory` itself. |
+
+---
+
+## Traps already hit in production
+
+Each of these cost real debugging time. They are recorded so the next agent does
+not rediscover them.
+
+| Symptom | Cause |
+| --- | --- |
+| `403 Resource not accessible by integration` on dispatch | Used `repository_dispatch` (needs `contents: write`) instead of `workflow_dispatch` (needs `actions: write`). |
+| `403` posting a PR comment with `issues: write` | A PR needs `pull_requests: write`. The shared `/issues/{n}/comments` path does not mean shared permissions. |
+| Permission added to the App but still 403 | The installation never approved the pending request. |
+| `fatal: remote error: upload-pack: not our ref` | Used `github.workflow_sha` (the CALLER's commit) where `github.job_workflow_sha` (this workflow's commit) was needed. |
+| Step fails with a bare exit code and no message | `curl -sf` — `-s` hides the error, `-f` hides the response body. Use `--show-error` and print the HTTP code. |
+| `curl` exit 56 mid-run | `CURLE_RECV_ERROR`. The runner is on a weak Wi-Fi link; retry transient failures. |
+| droid: "No custom models configured" | `FACTORY_HOME_OVERRIDE` must be the HOME directory, the **parent** of `.factory`. |
+| Job queues forever | The repo is public — public repos cannot use the runner. Use Pattern B. |
 
 ---
 
