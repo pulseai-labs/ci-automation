@@ -228,18 +228,26 @@ jobs:
             -f "inputs[pr]=$PR"
 ```
 
-**Step 4 — the one real per-project cost.** The public repo needs
-`PULSEAI_CI_APP_ID` (a *variable*) and `PULSEAI_CI_PRIVATE_KEY` (a *secret*),
-because a GitHub-hosted runner cannot read the key on the mini.
+**Step 4 — the one real per-project cost.** The public repo needs the
+**dispatch** app's credentials — `PULSEAI_DISPATCH_APP_ID` (a *variable*) and
+`PULSEAI_DISPATCH_PRIVATE_KEY` (a *secret*) — because a GitHub-hosted runner
+cannot read the key on the mini.
 
-This is a deliberate, bounded exception to "no secrets in repos". It applies
-**only to public repos in Pattern B**, and only to the trigger. Fork PRs never
-receive it. Set it with:
+**Never the worker key.** That distinction is the entire point of the two-app
+split: the credential placed in a public repo can trigger one workflow in one
+private repo, and nothing else. The worker key would grant read access to every
+private repo in the org.
+
+From `draco-hub-macos-server`:
 
 ```bash
-gh variable set PULSEAI_CI_APP_ID --repo pulseai-labs/PulseDB --body 4470964
-gh secret set PULSEAI_CI_PRIVATE_KEY --repo pulseai-labs/PulseDB < /path/to/app.pem
+./scripts/setup-dispatch-app.sh install <PublicRepoName>
+./scripts/setup-dispatch-app.sh verify
 ```
+
+`install` refuses to proceed if the dispatch app has picked up any permission
+beyond `actions:write`. `verify` then proves the resulting key cannot read
+private source, cannot comment, and covers no public repo.
 
 **Step 5 — allowlist the comment target.** The root mint helper on the runner
 hardcodes which repositories it will issue comment tokens for. A new public repo
