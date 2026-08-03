@@ -151,12 +151,15 @@ jobs:
       contents: read
 
     steps:
-      # The hub itself: prompts, pinned to the exact commit of this workflow.
+      # The hub itself: prompts, pinned to the exact commit of THIS reusable
+      # workflow. Must be job_workflow_sha, not workflow_sha: the latter is the
+      # CALLER's commit, which does not exist in this repository — checking it
+      # out fails with "upload-pack: not our ref".
       - name: Check out ci-automation
         uses: actions/checkout@v5
         with:
           repository: pulseai-labs/ci-automation
-          ref: ${{ github.workflow_sha }}
+          ref: ${{ github.job_workflow_sha }}
           path: .ci-automation
           persist-credentials: false
 
@@ -275,9 +278,13 @@ jobs:
           COMMENT_ISSUE: ${{ needs.validate.outputs.comment_issue }}
         run: |
           set -euo pipefail
+          F="report/${AUTOMATION}.md"
+          if [ ! -s "$F" ]; then
+            echo "no report to post (earlier step failed or produced nothing)"
+            exit 0
+          fi
           TOK="$(sudo -n /usr/local/libexec/pulseai-mint-token comment-token "$COMMENT_ON")"
           trap 'curl -s -o /dev/null -X DELETE -H "Authorization: token $TOK" https://api.github.com/installation/token || true' EXIT
-          F="report/${AUTOMATION}.md"
           BODY="$(printf '### droid %s\n\n<details><summary>report</summary>\n\n```\n%s\n```\n\n</details>\n' \
                   "$AUTOMATION" "$(tail -c 55000 "$F" 2>/dev/null || echo 'no output')")"
           jq -n --arg b "$BODY" '{body:$b}' \
