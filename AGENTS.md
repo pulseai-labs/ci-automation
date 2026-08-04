@@ -4,6 +4,24 @@ How to add a droid automation pipeline (QA, code review, security audit) to a
 project in `pulseai-labs`. Written for an agent or operator doing this without
 prior context.
 
+## Step zero — read ground truth, do not trust this file for facts
+
+```bash
+./scripts/context.sh          # in pulseai-labs/draco-hub-macos-server
+```
+
+**No plan is valid without its output.** This document holds *rationale* — why
+`workflow_dispatch` and not `repository_dispatch`, why the runner group is the
+security control, what each trap was. Rationale stays true. **Facts do not**:
+the hub SHA, app IDs, granted permissions, which repos run which automations,
+what a required check is named. Those are resolved by the command above and are
+deliberately absent here.
+
+This is not a stylistic preference. An earlier version of this file documented
+`repository_dispatch`, omitted two permissions that turned out to be required,
+and pinned a SHA three commits stale — every one accurate when written. An agent
+following it would have reproduced the exact failures it was written to prevent.
+
 Architecture and rationale live in `pulseai-labs/draco-hub-macos-server`,
 `docs/adr/0001-ci-automation-architecture.md`. Read that before changing
 anything structural. This file is the operational how-to.
@@ -84,9 +102,10 @@ Two rules that cost real debugging time:
 
 1. **Editing the App does not grant the permission.** It raises a *pending
    request* that each installation must approve separately, at
-   `https://github.com/organizations/pulseai-labs/settings/installations/150884244`.
-   Until then the installation keeps its old set. Check with:
-   `gh api /orgs/pulseai-labs/installations --jq '.installations[]|select(.app_slug=="pulseai-ci")|.permissions'`
+   the org's installations page. Until then the installation keeps its old set.
+   Check the live values with `./scripts/context.sh apps` in
+   `draco-hub-macos-server` — installation IDs are not recorded here, because a
+   recorded ID is wrong the moment it changes.
 2. **Never grant `contents: write`** to reach for a shortcut. For an App that is
    push access to all installed repos, and this App reads attacker-authored
    diffs. If something genuinely needs to write code, it belongs in a separate
