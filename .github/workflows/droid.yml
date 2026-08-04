@@ -230,14 +230,39 @@ jobs:
           P=".ci-automation/prompts/${AUTOMATION}.md"
           test -f "$P" || { echo "::error::missing prompt $P"; exit 1; }
           echo "prompt=$P" >>"$GITHUB_OUTPUT"
-          # Autonomy is set centrally per automation so it cannot drift
-          # per-repo. Read-only analysers never receive write autonomy.
+          # Autonomy is set centrally per automation so it cannot drift per-repo.
+          # Each tier is chosen from what the automation ACTUALLY DOES, not from
+          # a general preference for less. An earlier version applied a
+          # least-privilege instinct without checking, set qa to medium, and
+          # broke it: droid returned "insufficient permission to proceed.
+          # Re-run with --auto high".
+          #
+          #   low     file create/modify. No system changes.
+          #   medium  + package installs, network, local git, BUILDING code.
+          #           Still blocks git push and sudo.
+          #   high    + running arbitrary/untrusted code. "Allows ALL operations
+          #           without confirmation" — droid's own words.
+          #
+          # qa compiles AND EXECUTES consumer-simulation test programs. Running
+          # a compiled binary is arbitrary code execution, so high is the floor,
+          # not a convenience. See the runner-isolation note below.
+          #
+          # code-review and security-audit are read-first analysers, but a
+          # reviewer legitimately runs `cargo check` to confirm a claim, and
+          # low blocks that. medium still forbids push and sudo.
           case "$AUTOMATION" in
-            qa)             echo "autonomy=medium" >>"$GITHUB_OUTPUT" ;;
-            code-review)    echo "autonomy=low"    >>"$GITHUB_OUTPUT" ;;
-            security-audit) echo "autonomy=low"    >>"$GITHUB_OUTPUT" ;;
+            qa)             echo "autonomy=high"   >>"$GITHUB_OUTPUT" ;;
+            code-review)    echo "autonomy=medium" >>"$GITHUB_OUTPUT" ;;
+            security-audit) echo "autonomy=medium" >>"$GITHUB_OUTPUT" ;;
             *) echo "::error::unreachable"; exit 1 ;;
           esac
+          # RESIDUAL RISK, stated so it is not forgotten: droid documents
+          # --auto high as "only use in isolated environments (Docker, throwaway
+          # VMs)". This runner is a persistent macOS account whose _work
+          # directory is not wiped between jobs. Present containment is: a
+          # non-admin user, no GitHub credential in droid's environment, and a
+          # per-job workspace wipe. Ephemeral runner registration is the
+          # remaining mitigation and is not yet in place.
 
       - name: Verify curated skill is present
         shell: bash
