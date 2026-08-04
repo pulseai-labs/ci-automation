@@ -359,15 +359,32 @@ jobs:
           # otherwise break out of the collapsible block.
           REPORT="$(printf '%s' "$REPORT" | sed 's#</details>##g')"
 
+          # Distinguish INFRASTRUCTURE failure from a code finding. Observed:
+          # Z.AI session quota exhaustion surfaces as droid's generic
+          # "Exec failed", which is indistinguishable from a real QA failure —
+          # so a quota reset window looked exactly like bad code, on a check
+          # that gates merges.
+          INFRA=""
+          case "$REPORT" in
+            *"No active subscription"*|*"Payment Required"*|*402*) INFRA="model subscription/payment" ;;
+            *"rate limit"*|*"quota"*|*429*)                        INFRA="model quota or rate limit" ;;
+            *"Exec failed"*)                                       INFRA="droid exec failed (commonly model quota)" ;;
+            *"insufficient permission"*)                           INFRA="autonomy tier too low for this automation" ;;
+          esac
+
           VERDICT="$(printf '%s' "$REPORT" \
             | grep -ioE '(VERDICT|Verdict)[: ]+[A-Z][A-Z_-]*' \
             | head -1 | grep -oE '[A-Z][A-Z_-]*$' || true)"
-          case "$VERDICT" in
-            PASS)          ICON='✅' ;;
-            FAIL|FAILED)   ICON='❌' ;;
-            INCONCLUSIVE)  ICON='⚠️' ;;
-            *)             ICON='🤖'; VERDICT='report' ;;
-          esac
+          if [ -n "$INFRA" ]; then
+            ICON='🔌'; VERDICT="NOT RUN — $INFRA"
+          else
+            case "$VERDICT" in
+              PASS)          ICON='✅' ;;
+              FAIL|FAILED)   ICON='❌' ;;
+              INCONCLUSIVE)  ICON='⚠️' ;;
+              *)             ICON='🤖'; VERDICT='report' ;;
+            esac
+          fi
 
           RUN_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
 
@@ -425,13 +442,32 @@ jobs:
           # The agent's own verdict decides the gate where it gave one; the job
           # outcome decides otherwise. INCONCLUSIVE is deliberately NOT a
           # failure — "no library code changed" must not block a merge.
-          case "${VERDICT:-}" in
-            PASS)          STATE=success; DESC="PASS" ;;
-            FAIL|FAILED)   STATE=failure; DESC="FAIL — see the report comment" ;;
-            INCONCLUSIVE)  STATE=success; DESC="inconclusive (not applicable to this diff)" ;;
-            *) if [ "$JOB_STATUS" = "success" ]; then STATE=success; DESC="completed";
-               else STATE=failure; DESC="job ${JOB_STATUS}"; fi ;;
-          esac
+          # An infrastructure failure still BLOCKS — we do not know whether the
+          # code is good — but it is reported as `error`, not `failure`, and
+          # says so plainly. Otherwise a quota reset window is indistinguishable
+          # from bad code on a check that gates merges, and the reviewer debugs
+          # the diff instead of waiting an hour.
+          INFRA=""
+          if [ -f "$F" ]; then
+            case "$(cat "$F")" in
+              *"No active subscription"*|*"Payment Required"*) INFRA="model subscription/payment — NOT a code finding" ;;
+              *"rate limit"*|*"quota"*)                        INFRA="model quota/rate limit — NOT a code finding" ;;
+              *"Exec failed"*)                                 INFRA="droid exec failed, commonly model quota — NOT a code finding" ;;
+              *"insufficient permission"*)                     INFRA="autonomy tier too low — NOT a code finding" ;;
+            esac
+          fi
+
+          if [ -n "$INFRA" ]; then
+            STATE=error; DESC="$INFRA"
+          else
+            case "${VERDICT:-}" in
+              PASS)          STATE=success; DESC="PASS" ;;
+              FAIL|FAILED)   STATE=failure; DESC="FAIL — see the report comment" ;;
+              INCONCLUSIVE)  STATE=success; DESC="inconclusive (not applicable to this diff)" ;;
+              *) if [ "$JOB_STATUS" = "success" ]; then STATE=success; DESC="completed";
+                 else STATE=failure; DESC="job ${JOB_STATUS}"; fi ;;
+            esac
+          fi
 
           TOK="$(sudo -n /usr/local/libexec/pulseai-mint-token status-token "$STATUS_REPO")"
           trap 'curl -s -o /dev/null -X DELETE -H "Authorization: token $TOK" https://api.github.com/installation/token || true' EXIT
