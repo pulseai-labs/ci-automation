@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Parser, Language, type Node } from "web-tree-sitter";
 import type { ChangedFile, SymbolInfo } from "../types";
+import { changedLines, rangeTouched, type ChangedLines } from "./hunks";
 
 /**
  * Real Rust parser (web-tree-sitter + tree-sitter-rust), not a hand-rolled
@@ -123,83 +124,14 @@ function collect(
 }
 
 /**
- * A deletion-only hunk (`@@ -l,s +n,0 @@`) leaves a "gap" in the new file
- * between two surviving lines. `before` is the last surviving line ahead of
- * the gap (0-indexed new-file row; `null` when the gap is at the very start
- * of the file, so there is no preceding line) and `after` is the first
- * surviving line behind it.
- */
-interface DeletionGap {
-  before: number | null;
-  after: number;
-}
-
-interface ChangedLines {
-  /** rows carrying real new-side content (added or context lines) — 0-indexed */
-  rows: Set<number>;
-  deletionGaps: DeletionGap[];
-}
-
-/**
- * Lines touched by the diff, as 0-indexed new-file row numbers, plus the
- * gap anchors of any pure-deletion hunks (resolved against the AST later, in
- * `isTouched` — see that function for why).
- *
- * Critical fix: a pure-deletion hunk (`@@ -l,s +n,0 @@`) has nothing on the
- * new side, so it used to contribute nothing to the touched set — making a
- * deleted call inside an otherwise-untouched function structurally invisible
- * (the enclosing function's row range never intersected `touched`, so
- * `extractSymbols` silently dropped it).
- *
- * Git's convention for a `+n,0` hunk is that `n` is the new-file line
- * immediately BEFORE the gap left by the deletion (0 when the gap is at the
- * very start of the file); the line immediately AFTER the gap is `n+1`.
- */
-function changedLines(repo: string, base: string, path: string): ChangedLines {
-  const p = Bun.spawnSync(["git", "diff", "-U0", `${base}...HEAD`, "--", path], { cwd: repo });
-  const out = p.stdout.toString();
-  const rows = new Set<number>();
-  const deletionGaps: DeletionGap[] = [];
-  for (const m of out.matchAll(/^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/gm)) {
-    const start = Number(m[1]);
-    const count = m[2] === undefined ? 1 : Number(m[2]);
-    if (count === 0) {
-      deletionGaps.push({
-        before: start > 0 ? start - 1 : null, // 0-indexed, or no preceding line
-        after: start, // 0-indexed
-      });
-      continue;
-    }
-    for (let i = 0; i < count; i++) rows.add(start + i - 1); // 0-indexed
-  }
-  return { rows, deletionGaps };
-}
-
-/**
- * Important-finding fix: a pure-deletion gap used to register BOTH of its
- * anchors as independently "touched," so a deletion sitting *between* two
- * functions (e.g. an interstitial comment) landed one anchor on the
- * preceding function's last row and the other on the following function's
- * first row — falsely marking both changed although neither's own content
- * changed.
- *
- * Fix: resolve the gap against the AST. The deletion point sits strictly
- * inside a single item's row range only when BOTH surviving anchors do —
- * since an item's rows are contiguous, that is exactly the condition for
- * the gap to fall in its interior rather than at a boundary shared with a
- * neighbour (or outside any item, e.g. between a container's opening brace
- * and its first member).
+ * Whether `item`'s row range was touched by the diff. Thin, item-shaped
+ * adapter over the shared `rangeTouched` (see hunks.ts for the deletion-gap
+ * resolution rationale, moved there in Task 4's review so lint.ts's clippy
+ * spans can reuse the exact same "did the diff touch this row range" logic
+ * instead of only checking file membership).
  */
 function isTouched(item: Item, changed: ChangedLines): boolean {
-  for (const l of changed.rows) {
-    if (l >= item.startRow && l <= item.endRow) return true;
-  }
-  for (const gap of changed.deletionGaps) {
-    const beforeIn = gap.before !== null && gap.before >= item.startRow && gap.before <= item.endRow;
-    const afterIn = gap.after >= item.startRow && gap.after <= item.endRow;
-    if (beforeIn && afterIn) return true;
-  }
-  return false;
+  return rangeTouched(item.startRow, item.endRow, changed);
 }
 
 export async function extractSymbols(repo: string, base: string, files: ChangedFile[]): Promise<SymbolInfo[]> {
