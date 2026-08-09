@@ -76,8 +76,11 @@ export function runClippy(repo: string, base: string, files: ChangedFile[], opts
       // message, children, rendered, spans — no group anywhere). Mapping
       // lint id -> Category would mean hand-maintaining a table of
       // clippy's 700+ individual lints, unversioned and broken by every
-      // clippy release, so left as "maintainability" per the brief.
-      category: "maintainability",
+      // clippy release. Instead, we use msg.level as a proxy: "error" level
+      // corresponds to clippy's deny-by-default "correctness" group, while
+      // "warning" level covers style/perf/pedantic and other lints. This is
+      // a coarse classification, not an exact group mapping.
+      category: msg.level === "error" ? "correctness" : "maintainability",
       path: span.file_name,
       line: span.line_start,
       title: msg.message,

@@ -177,3 +177,30 @@ exit 101
   const buildResult = runClippy("/tmp", "main", [], { cargoBin: buildFailure });
   expect(buildResult.degraded.join(" ")).toContain("build failed");
 });
+
+// --- category mapping based on lint level ---
+
+test("runClippy maps error-level diagnostics to correctness and warning-level to maintainability", () => {
+  const repo = repoWith(TEN_LINES, s => s.replace("fn a() {}", "fn a2() {}"));
+  const cargo = fakeCargo(`
+if [[ "$1" == "clippy" && "$2" == "--version" ]]; then
+  exit 0
+fi
+cat <<'JSON'
+{"reason":"compiler-message","message":{"level":"error","code":{"code":"clippy::eq_op"},"message":"correctness-lint","spans":[{"is_primary":true,"file_name":"src/db.rs","line_start":1,"line_end":1}],"children":[]}}
+{"reason":"compiler-message","message":{"level":"warning","code":{"code":"clippy::needless_return"},"message":"style-lint","spans":[{"is_primary":true,"file_name":"src/db.rs","line_start":1,"line_end":1}],"children":[]}}
+JSON
+exit 0
+`);
+
+  const r = runClippy(repo, "base", [{ path: "src/db.rs", added: 1, removed: 1 }], { cargoBin: cargo });
+  expect(r.findings.length).toBe(2);
+
+  const correctness = r.findings.find(f => f.title === "correctness-lint");
+  expect(correctness?.category).toBe("correctness");
+
+  const maintainability = r.findings.find(f => f.title === "style-lint");
+  expect(maintainability?.category).toBe("maintainability");
+
+  rmSync(repo, { recursive: true, force: true });
+});
