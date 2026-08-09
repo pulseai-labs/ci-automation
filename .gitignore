@@ -1,0 +1,5 @@
+# SDD controller scratch (briefs, reports, review packages, progress ledger)
+.superpowers/
+
+# Bun / node
+node_modules/
