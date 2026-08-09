@@ -213,3 +213,94 @@ test("editing only a comment between two functions reports neither as changed", 
   expect(syms).toEqual([]);
   rmSync(repo, { recursive: true, force: true });
 });
+
+// --- second review round: 2 Important findings -----------------------------
+
+// Important (round 2, finding 1): the `count === 0` branch added to fix
+// Critical 1 registered BOTH gap anchors as independently touched. When the
+// deleted content sits BETWEEN two functions (not inside one), those anchors
+// land on the preceding function's last row and the following function's
+// first row respectively — falsely marking both changed although neither's
+// own content changed. This is the pure-deletion analogue of the
+// "comment between two functions" case above (a same-line edit, handled by
+// the ordinary count>0 path, was already safe).
+test("deleting (not editing) a comment between two functions reports neither as changed", async () => {
+  const { repo, sh } = repoWith(COMMENT_BETWEEN_SRC);
+  writeFileSync(
+    join(repo, "src/db.rs"),
+    COMMENT_BETWEEN_SRC.replace("    // a comment sitting between two functions\n", "")
+  );
+  sh("git add -A && git commit -qm change");
+
+  const syms = await extractSymbols(repo, "base", [{ path: "src/db.rs", added: 0, removed: 1 }]);
+  expect(syms).toEqual([]);
+  rmSync(repo, { recursive: true, force: true });
+});
+
+// Important (round 2, finding 2): only container nodes pushed a stack frame,
+// so a local helper `fn` declared inside another function's body was
+// attributed to the enclosing container and appeared in its enclosing
+// method's `siblings` as if it were a peer method. It is not a peer of
+// anything (nothing outside its host function can even call it), so it is
+// excluded from the symbol list entirely (see the design-choice comment on
+// `collect` in symbols.ts).
+const NESTED_FN_SRC = `
+impl PulseDB {
+    pub fn open(path: &Path) -> Result<Self> {
+        fn local_helper(x: u32) -> u32 { x + 1 }
+        let y = local_helper(1);
+        Ok(Self {})
+    }
+
+    pub fn open_with_embedder(path: &Path, e: Arc<dyn Embedder>) -> Result<Self> {
+        Ok(Self {})
+    }
+}
+`;
+
+test("a fn nested inside another fn's body is excluded from the symbol list and from its host's siblings", async () => {
+  const { repo, sh } = repoWith(NESTED_FN_SRC);
+  writeFileSync(join(repo, "src/db.rs"), NESTED_FN_SRC.replace("x + 1", "x + 2"));
+  sh("git add -A && git commit -qm change");
+
+  const syms = await extractSymbols(repo, "base", [{ path: "src/db.rs", added: 1, removed: 1 }]);
+
+  // the nested helper never appears as its own symbol
+  expect(syms.find(s => s.name === "local_helper")).toBeUndefined();
+
+  // editing the helper's body still shows its host, `open`, as changed
+  const open = syms.find(s => s.name === "open");
+  expect(open).toBeDefined();
+  expect(open!.container).toBe("impl PulseDB");
+  // exact sibling list — local_helper must not be smuggled in as a peer
+  expect(open!.siblings).toEqual([
+    "pub fn open_with_embedder(path: &Path, e: Arc<dyn Embedder>) -> Result<Self>",
+  ]);
+  rmSync(repo, { recursive: true, force: true });
+});
+
+// Minor: a pure-deletion hunk at the very start of a file has no preceding
+// line (git reports `+0,0`); `changedLines` must not synthesize a negative
+// row for it. Regression guard, not a pre-fix failure: an unguarded -1 also
+// never matched any item's (>= 0) startRow, so behaviour is unchanged — this
+// just pins down that the boundary case stays inert rather than crashing or
+// (if the guard were ever removed carelessly) coincidentally matching.
+const LEADING_LINE_SRC = `// leading file comment, not inside any container
+impl PulseDB {
+    pub fn open(path: &Path) -> Result<Self> { Ok(Self {}) }
+    pub fn open_with_embedder(path: &Path, e: Arc<dyn Embedder>) -> Result<Self> { Ok(Self {}) }
+}
+`;
+
+test("deleting the very first line of a file does not mark any function changed", async () => {
+  const { repo, sh } = repoWith(LEADING_LINE_SRC);
+  writeFileSync(
+    join(repo, "src/db.rs"),
+    LEADING_LINE_SRC.replace("// leading file comment, not inside any container\n", "")
+  );
+  sh("git add -A && git commit -qm change");
+
+  const syms = await extractSymbols(repo, "base", [{ path: "src/db.rs", added: 0, removed: 1 }]);
+  expect(syms).toEqual([]);
+  rmSync(repo, { recursive: true, force: true });
+});
