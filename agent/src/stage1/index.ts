@@ -6,7 +6,15 @@ import { runApiDelta, runSemverChecks } from "./cargoTools";
 
 export const CAPS = {
   diff: 150_000,
-  containers: 8_000,
+  // 24,000, not the original 8,000 (spec amendment, task-s1 fix round 1):
+  // at 8,000 a single dominant container (e.g. `impl PulseDB` at 7,101 B —
+  // 89% of the budget) makes the whole-container trim effectively
+  // all-or-nothing on exactly the container most likely to hold the
+  // peer-divergence defect this feature targets, and survival depended on
+  // 897 B of incidental slack ahead of it in sort order. At 24,000 the real
+  // PulseDB golden diff's full container evidence (19,594 B, all 8
+  // containers) fits whole — see task-s1-report.md, "Fix round 1".
+  containers: 24_000,
   clippy: 16_000,
   apiDelta: 8_000,
 };
@@ -46,6 +54,19 @@ export interface GatherOpts {
  * still fit. `capped` is true iff at least one item did not make it in,
  * which is exactly the case where serializing every item in `items` would
  * have exceeded `limit`.
+ *
+ * Deliberate behaviour change from the two loops this replaced (fix round
+ * 1, review finding 4): those only sorted *inside* an `if (rawBytes > CAP)`
+ * guard, so an under-cap section kept whatever order its source produced
+ * it in. This always sorts, even when nothing gets trimmed. That source
+ * order is not itself deterministic for clippy — real `cargo clippy
+ * --message-format=json` interleaves diagnostics across parallel codegen
+ * units — so the old under-cap path was a latent determinism hole in a
+ * layer-0 guarantee ("same commit in, byte-identical pack out"). Always
+ * sorting closes it. Confirmed emitting a descending-order clippy fixture
+ * under the cap: `b791c03` (pre-trimToCap) reproduces the emission order
+ * verbatim (`10,9,8...1`); this version always returns it sorted
+ * (`1,2,3...10`) — see task-s1-report.md's "Fix round 1".
  */
 function trimToCap<T>(items: T[], limit: number, cmp: (a: T, b: T) => number): { kept: T[]; capped: boolean } {
   const sorted = [...items].sort(cmp);

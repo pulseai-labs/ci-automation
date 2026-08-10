@@ -219,7 +219,8 @@ exit 1
 
 /**
  * A fixture with a raw diff far larger than every cap combined (~294 KB vs.
- * a 182 KB total ceiling), built from only 3 functions so the symbol section
+ * a 198 KB total ceiling — CAPS.containers raised 8,000 -> 24,000 in fix
+ * round 1), built from only 3 functions so the symbol section
  * stays tiny and the diff cap is the only thing under test. Each function
  * carries a huge `///` doc-comment line ahead of it — doc comments are not
  * part of the `function_item` node tree-sitter hands back (verified: with
@@ -243,12 +244,13 @@ function hugeDiffFixtureRepo(nFns: number, docRepeat: number): string {
 }
 
 // Fix 2: the budget-ceiling assertion in the earlier test above (~3.3 KB
-// against a 182 KB ceiling) would still pass with every cap in `gather`
-// deleted — a 55x margin proves nothing. This fixture's raw diff (~294 KB)
-// is itself larger than the entire ceiling, so staying under the ceiling is
-// only possible because the diff cap actually fired. The load-bearing
-// demonstration (cap disabled -> budget.bytes exceeds the ceiling) is a
-// scratch run recorded in task-5-report.md, not part of this test.
+// against the ceiling, 198 KB as of fix round 1, was 182 KB) would still
+// pass with every cap in `gather` deleted — a 55x margin proves nothing.
+// This fixture's raw diff (~294 KB) is itself larger than the entire
+// ceiling, so staying under the ceiling is only possible because the diff
+// cap actually fired. The load-bearing demonstration (cap disabled ->
+// budget.bytes exceeds the ceiling) is a scratch run recorded in
+// task-5-report.md, not part of this test.
 test("fixture: gather truncates a diff far larger than every cap combined and stays under the total ceiling", async () => {
   const repo = hugeDiffFixtureRepo(3, 7000);
   try {
@@ -309,28 +311,36 @@ function manyContainersFixtureRepo(m: number, bigIdx: number, smallItems: number
   return repo;
 }
 
-// S1: the old symbol-level trim (index.ts, pre-S1) was executed by a fixture
-// with 15 functions in a SINGLE container — meaningless once the cap moved
-// to `containers`, since a single container is either kept whole or dropped
-// whole; there is nothing to trim "the exact kept set" from. This replaces
-// it with 15 containers (C00-C14); C05 holds 110 functions (~6.6 KB alone)
-// and does not fit once C00-C04 are already kept, but C06-C14 (small) are
-// tried afterward and DO fit — kept = C00-C04, C06-C14 (14 of 15, dropping
-// only C05). Numbers verified against the real `gather()` pipeline before
-// writing this assertion (see task-s1-report.md).
+// S1 (fix round 1: re-tuned for CAPS.containers = 24,000, up from 8,000 —
+// see index.ts). 100 containers (C00-C99); C05 holds 400 functions (~26 KB
+// alone, unambiguously oversized) and does not fit once C00-C04 are already
+// kept, but C06-C99 (small, 3 functions each) are tried afterward and MOST
+// (92 of 94) DO fit — kept = C00-C04, C06-C97 (97 of 100), dropping C05,
+// C98, C99.
+//
+// Fix round 1, review finding 3 ("pin the container cap two-sided"): at the
+// OLD parameters (15 containers) the trailing region had ~4.4 KB of slack —
+// every cap from 4,000 to 7,000 produced the IDENTICAL kept set as 8,000,
+// so the exact-array assertion below would not actually have noticed the
+// cap value being wrong by thousands of bytes. With 94 trailing same-size
+// containers here, the boundary is as tight as a whole-item (never-split)
+// trim can make it: bumping CAPS.containers by -150 B drops one more
+// container (96 kept) and by +300 B admits one more (98 kept) — see
+// task-s1-report.md's "Fix round 1" for the swept values. Numbers verified
+// against the real `gather()` pipeline before writing this assertion.
 test("fixture: gather trims whole containers to CAPS.containers, keeping the exact expected set", async () => {
-  const repo = manyContainersFixtureRepo(15, 5, 3, 110);
+  const repo = manyContainersFixtureRepo(100, 5, 3, 400);
   try {
     const a = await gather({ repo, base: "base", skipCargo: true });
     const b = await gather({ repo, base: "base", skipCargo: true });
     expect(a.budget.capped).toEqual(["containers"]);
     const expectedKept = [
       ...Array.from({ length: 5 }, (_, i) => `C${String(i).padStart(2, "0")}`), // C00-C04
-      ...Array.from({ length: 9 }, (_, i) => `C${String(i + 6).padStart(2, "0")}`), // C06-C14
+      ...Array.from({ length: 92 }, (_, i) => `C${String(i + 6).padStart(2, "0")}`), // C06-C97
     ].map(label => `impl ${label}`);
     expect(a.containers.map(c => c.container)).toEqual(expectedKept);
     // never split a container's signatures — every kept container has all
-    // of its own items (3, since only C05 is the 110-item outlier)
+    // of its own items (3, since only C05 is the 400-item outlier)
     expect(a.containers.every(c => c.signatures.length === 3)).toBe(true);
     expect(JSON.stringify(a)).toBe(JSON.stringify(b));
     // The invariant the snapshot above exists to demonstrate: the kept
@@ -376,9 +386,16 @@ exit 1
     const rawFindings = Array.from({ length: n }, (_, i) => expectedClippyFinding(i + 1, titleLen));
     // Guard: the raw (untrimmed) section must itself exceed CAPS.clippy by
     // less than one finding's worth of separator bytes, or this fixture
-    // would not be distinguishing "counts separators" from "doesn't".
+    // would not be distinguishing "counts separators" from "doesn't". The
+    // second assertion is the sharper form of the same guard (fix round 1,
+    // review finding 4): the separator-drop bug can only hide up to
+    // (kept - 1) bytes, so once the overshoot exceeds roughly `n` bytes the
+    // mutation stops mattering here at all — a future `titleLen` bump could
+    // silently kill this fixture's sensitivity without either assertion
+    // otherwise noticing.
     const rawBytes = Buffer.byteLength(JSON.stringify(rawFindings), "utf8");
     expect(rawBytes).toBeGreaterThan(CAPS.clippy);
+    expect(rawBytes - CAPS.clippy).toBeLessThan(n);
 
     expect(p.budget.capped).toEqual(["clippy"]);
     const expectedKept = rawFindings.slice(0, keptCount);
@@ -396,9 +413,19 @@ exit 1
 // functions each (N=90 symbols, N ≫ M) exercise that shape directly: the
 // serialized `containers` section must be proportional to M (each
 // container's list stored once), not to N (which is what copying it onto
-// every one of the 90 symbols would have produced). The comparison is a
-// real reconstruction of the pre-S1 per-symbol-duplicated shape from the
-// same extracted data, not an approximated number.
+// every one of the 90 symbols would have produced).
+//
+// Fix round 1, review finding 2: the original version of this test compared
+// `p.containers`'s own byte size against a reconstruction ALSO built from
+// `p.containers` (`oldStyle` below, derived from `c.signatures`). A bug that
+// duplicates a container's own `signatures` list r times inflates BOTH
+// sides of that ratio equally, so it stays pinned at ~29x for any r — the
+// reviewer simulated r=1..30 and it passed every time, never once reaching
+// the line it was meant to guard. The fix is the `flatMap(...).length`
+// assertion below: it counts signature STRINGS, independent of
+// `p.containers`'s own serialized size, so r-fold duplication multiplies
+// the count instead of leaving it invariant. The byte-ratio comparison is
+// kept as a secondary, illustrative measurement only — see its comment.
 test("fixture: containers bytes scale with the number of containers, not the number of symbols in them", async () => {
   const M = 3, k = 30;
   const repo = manyContainersFixtureRepo(M, -1, k, k);
@@ -410,11 +437,19 @@ test("fixture: containers bytes scale with the number of containers, not the num
     expect(p.containers.length).toBe(M);
     expect(p.budget.capped).not.toContain("containers");
 
-    const containersBytes = Buffer.byteLength(JSON.stringify(p.containers), "utf8");
+    // Load-bearing oracle, computed independently of `p.containers`'s own
+    // serialized byte size: with M containers of k touched items each,
+    // there must be EXACTLY N = M*k signature strings total — one per
+    // touched function, appearing in exactly one container's list. Any
+    // duplication within a container's `signatures` array (the mutation the
+    // review simulated) multiplies this count and fails here.
+    expect(p.containers.flatMap(c => c.signatures).length).toBe(N);
 
-    // Reconstruct what the pre-S1 `siblings` shape (one full copy of the
-    // container's signature list, self excluded, PER touched symbol) would
-    // have serialized to, from the same real extracted data.
+    // Secondary, illustrative only (NOT what the assertion above depends
+    // on): how much smaller the new (stored-once) representation is than
+    // the pre-S1 per-symbol-duplicated `siblings` shape would have been, in
+    // absolute bytes. Reconstructed from the same real extracted data.
+    const containersBytes = Buffer.byteLength(JSON.stringify(p.containers), "utf8");
     const oldStyle = p.symbols.map(s => {
       const c = p.containers.find(c => c.path === s.path && c.container === s.container)!;
       return {
@@ -423,12 +458,10 @@ test("fixture: containers bytes scale with the number of containers, not the num
       };
     });
     const oldStyleBytes = Buffer.byteLength(JSON.stringify(oldStyle), "utf8");
-
-    // New (stored once per container) must be a small fraction of what the
-    // old (stored once per symbol) shape would have cost — proportional to
-    // M rather than N. Threshold set well inside the ~29x margin measured
-    // for these exact numbers (see task-s1-report.md), so it stays
-    // sensitive to a real regression without being flaky.
+    // Illustrative bound only — both sides are derived from `p.containers`,
+    // so this ratio does NOT move under within-container duplication (see
+    // the comment above the test). Do not rely on this line to catch a
+    // regression; the `flatMap(...).length` assertion above is what does.
     expect(containersBytes * 10).toBeLessThan(oldStyleBytes);
   } finally { rmSync(repo, { recursive: true, force: true }); }
 });

@@ -336,3 +336,60 @@ test("deleting the very first line of a file does not mark any function changed"
   expect(containers).toEqual([]);
   rmSync(repo, { recursive: true, force: true });
 });
+
+// --- Fix round 1 (review of S1) --------------------------------------------
+
+// Review finding 1: the `${path}::${label}` dedup key collides when one file
+// has two same-labelled `impl` blocks — idiomatic Rust (public API in one
+// `impl`, helpers in another; or two `#[cfg]`-gated blocks). A first-writer-
+// wins guard silently dropped the second block's signatures from the pack,
+// landing exactly on the `open` / `open_with_embedder` peer-divergence case
+// this feature exists to surface. Fixed by merging same-key containers
+// (concatenating `items`, preserving source order) instead of first-wins.
+const SPLIT_IMPL_SRC = `
+impl PulseDB {
+    pub fn open(path: &Path) -> Result<Self> { Ok(Self {}) }
+}
+
+impl PulseDB {
+    pub fn open_with_embedder(path: &Path, e: Arc<dyn Embedder>) -> Result<Self> { Ok(Self {}) }
+}
+`;
+
+test("two same-labelled impl blocks in one file are merged into a single container, not first-writer-wins", async () => {
+  const { repo, sh } = repoWith(SPLIT_IMPL_SRC);
+  writeFileSync(
+    join(repo, "src/db.rs"),
+    SPLIT_IMPL_SRC
+      .replace("pub fn open(path: &Path)", "pub fn open(path: &Path) /* touched */")
+      .replace("pub fn open_with_embedder(path: &Path, e: Arc<dyn Embedder>)",
+        "pub fn open_with_embedder(path: &Path, e: Arc<dyn Embedder>) /* touched */")
+  );
+  sh("git add -A && git commit -qm change");
+
+  const { symbols, containers } = await extractSymbols(repo, "base", [
+    { path: "src/db.rs", added: 2, removed: 2 },
+  ]);
+
+  // both functions were extracted as symbols, from the same-labelled
+  // container in each case
+  expect(symbols.map(s => s.name).sort()).toEqual(["open", "open_with_embedder"]);
+  expect(symbols.every(s => s.container === "impl PulseDB")).toBe(true);
+
+  // merged into ONE container entry, not two
+  expect(containers.length).toBe(1);
+  expect(containers[0]!.container).toBe("impl PulseDB");
+
+  // both blocks' signatures present, in source order (block 1's `open`
+  // before block 2's `open_with_embedder`) — the reviewer's exact repro:
+  // `open_with_embedder`'s own signature must resolve to `true`, not `false`
+  const open = symbols.find(s => s.name === "open")!;
+  const openWithEmbedder = symbols.find(s => s.name === "open_with_embedder")!;
+  const container = containerFor(containers, open)!;
+  expect(container).toBe(containerFor(containers, openWithEmbedder)!);
+  expect(container.signatures).toEqual([
+    "pub fn open(path: &Path) /* touched */ -> Result<Self>",
+    "pub fn open_with_embedder(path: &Path, e: Arc<dyn Embedder>) /* touched */ -> Result<Self>",
+  ]);
+  rmSync(repo, { recursive: true, force: true });
+});

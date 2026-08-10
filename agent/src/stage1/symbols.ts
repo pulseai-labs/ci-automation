@@ -147,10 +147,16 @@ export async function extractSymbols(repo: string, base: string, files: ChangedF
 
   const symbols: SymbolInfo[] = [];
   const containers: ContainerInfo[] = [];
-  // `${path}::${container label}` -> whether that container's signature list
-  // has already been emitted into `containers` (once per container, however
-  // many of its items were touched).
-  const seenContainers = new Set<string>();
+  // `${path}::${container label}` -> the ContainerInfo already emitted for
+  // that key, so a second block with the same label (idiomatic Rust: a
+  // public `impl Foo` and a separate `impl Foo` for helpers, or two
+  // `#[cfg]`-gated blocks) gets its items MERGED into the first one's
+  // `signatures`, in source order, rather than silently dropped by a
+  // first-block-wins guard. Merging is also the only answer consistent with
+  // the pack's own reference scheme: a symbol points at its container by
+  // `(path, container)` alone, which cannot distinguish two same-labelled
+  // blocks anyway (fix round 1, review finding 1).
+  const containerByKey = new Map<string, ContainerInfo>();
 
   for (const f of files) {
     let src: string;
@@ -177,9 +183,13 @@ export async function extractSymbols(repo: string, base: string, files: ChangedF
       }
 
       const key = `${f.path}::${c.label}`;
-      if (!seenContainers.has(key)) {
-        seenContainers.add(key);
-        containers.push({ path: f.path, container: c.label, signatures: c.items.map(i => i.signature) });
+      const existing = containerByKey.get(key);
+      if (existing) {
+        existing.signatures.push(...c.items.map(i => i.signature));
+      } else {
+        const info: ContainerInfo = { path: f.path, container: c.label, signatures: c.items.map(i => i.signature) };
+        containerByKey.set(key, info);
+        containers.push(info);
       }
     }
   }
