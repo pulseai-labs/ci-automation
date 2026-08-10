@@ -80,6 +80,22 @@ test("an explicit non-default gateOn gates on that severity, with an accurate re
   expect(v.reason).toBe("1 gating finding(s), highest severity minor");
 });
 
+// Fix round 2, Fix 1 + Fix 2: SEVERITY_RANK's ordering and the gating count
+// were both unobserved — every prior FAIL test carries exactly one gating
+// finding of exactly one severity, so `find` returns that severity
+// regardless of list order, and `gating.length` always equals the total
+// count of findings passed in. A mixed set (multiple gating severities,
+// plus a non-gating minor and an adjacent blocker that must both be
+// excluded from the count) pins the rank order, the count, and the
+// exclusion rules all at once.
+test("a mixed gating set reports the count of gating findings and the worst severity present", () => {
+  const v = deriveVerdict(
+    [f({ severity: "blocker" }), f({ severity: "major" }), f({ severity: "minor" }),
+     f({ severity: "blocker", adjacent: true })], pack(3));
+  expect(v.verdict).toBe("FAIL");
+  expect(v.reason).toBe("2 gating finding(s), highest severity blocker");
+});
+
 test("an adjacent major does NOT gate", () => {
   expect(deriveVerdict([f({ severity: "major", adjacent: true })], pack(3)).verdict).toBe("PASS");
 });
