@@ -1,4 +1,4 @@
-import type { EvidencePack, Finding, ReviewResult } from "../types";
+import type { EvidencePack, Finding, ReviewResult, Severity } from "../types";
 import { validate, type DropCode } from "./validate";
 import { deriveVerdict } from "./verdict";
 export { renderReport } from "./render";
@@ -40,11 +40,19 @@ const DROP_CAUSE: Record<DropCode, string> = {
  * task-8-brief.md Amendment A2. Drop-rate is the pipeline's only signal of
  * model hallucination (a model that invents file paths would otherwise
  * produce a clean-looking report with no trace of the discarded findings).
+ *
+ * `gateOn` (N2): forwarded to `deriveVerdict` unchanged (omitted, it falls
+ * back to `deriveVerdict`'s own `DEFAULT_GATE` default, exactly as before
+ * this parameter existed). A caller that supplies a non-default `gateOn`
+ * here MUST pass that identical value to `render.ts`'s `renderReport()`
+ * too — this function's return value (`ReviewResult`) does not carry
+ * `gateOn`, so nothing propagates it automatically. See render.ts's
+ * `renderReport()` doc comment for why.
  */
-export function finalize(raw: Finding[], pack: EvidencePack, repo: string): ReviewResult {
+export function finalize(raw: Finding[], pack: EvidencePack, repo: string, gateOn?: Severity[]): ReviewResult {
   const all = [...raw, ...pack.clippy, ...(pack.semver ?? [])];
   const { kept, dropped } = validate(all, pack, repo);
-  const { verdict, reason } = deriveVerdict(kept, pack);
+  const { verdict, reason } = deriveVerdict(kept, pack, gateOn);
   // Copy, not reference — `pack.degraded` belongs to the caller's evidence
   // pack; pushing into it directly would mutate that shared object.
   const degraded = [...pack.degraded];

@@ -1,5 +1,5 @@
-import type { EvidencePack, Finding, ReviewResult } from "../types";
-import { isGating, SEVERITY_RANK } from "./verdict";
+import type { EvidencePack, Finding, ReviewResult, Severity } from "../types";
+import { DEFAULT_GATE, isGating, SEVERITY_RANK } from "./verdict";
 
 /**
  * SECURITY INVARIANT this file exists to hold:
@@ -322,8 +322,27 @@ function bySeverity(a: Finding, b: Finding): number {
  * the file-level comment above, so injected content (in a diff, or in a
  * model that has been talked into cooperating with it) cannot control the
  * comment's structure. See task-8-brief.md.
+ *
+ * `gateOn` (N2): deriveVerdict's `gateOn` is deliberate public API — a
+ * caller may derive the verdict with a non-default gate tier list — and
+ * this file's own `isGating()` call must partition findings against THE
+ * SAME `gateOn`, or the report can show a finding under "Other findings
+ * (do not gate)" that the verdict just counted as gating (fix-round-review
+ * I2, reopened: I2's original fix shared the isGating() PREDICATE between
+ * verdict.ts and render.ts but not the `gateOn` ARGUMENT, so an
+ * unparameterized `isGating(f)` here silently fell back to DEFAULT_GATE
+ * regardless of what the caller passed to deriveVerdict). Defaults to the
+ * same `DEFAULT_GATE` deriveVerdict itself defaults to, so every existing
+ * caller (which never passed a custom `gateOn` to either function) is
+ * unaffected; a caller that DOES use a non-default `gateOn` must pass the
+ * identical value here that it passed to `deriveVerdict` (and, if going
+ * through `finalize()`, to `finalize()`'s own `gateOn` parameter) to keep
+ * the verdict and the report in agreement — `ReviewResult` itself carries
+ * no `gateOn` field to auto-propagate this (see
+ * .superpowers/sdd/final-review-fixes.md's N2 section for why that
+ * stamped-partition alternative was not chosen here).
  */
-export function renderReport(r: ReviewResult, pack: EvidencePack): string {
+export function renderReport(r: ReviewResult, pack: EvidencePack, gateOn: Severity[] = DEFAULT_GATE): string {
   // Three-way split using verdict.ts's OWN gating predicate (`isGating`) —
   // not a second, render-local notion of "gating" (fix-round-review I2: the
   // previous split was `!f.adjacent` alone, no severity check, so a
@@ -332,8 +351,8 @@ export function renderReport(r: ReviewResult, pack: EvidencePack): string {
   // blocker. `other` is deliberately the complement of both `blocking` and
   // `adjacent` (not, say, "everything not blocking"), so every finding
   // lands in exactly one of the three sections.
-  const blocking = r.findings.filter(f => isGating(f));
-  const other = r.findings.filter(f => !f.adjacent && !isGating(f));
+  const blocking = r.findings.filter(f => isGating(f, gateOn));
+  const other = r.findings.filter(f => !f.adjacent && !isGating(f, gateOn));
   const adjacent = r.findings.filter(f => f.adjacent);
 
   const out: string[] = [];

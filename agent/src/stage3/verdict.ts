@@ -4,7 +4,12 @@ import type { EvidencePack, Finding, Severity, Verdict } from "../types";
 // (agent/src/stage1/lint.ts:71 maps error-level clippy diagnostics to
 // "major"). Dropping "major" here would silently turn every one of those
 // off without any type error — see task-7-brief.md Amendment A1.
-const DEFAULT_GATE: Severity[] = ["blocker", "major"];
+//
+// Exported (N2) so render.ts can default its OWN `gateOn` parameter to the
+// exact same value deriveVerdict defaults to, instead of hardcoding an
+// unparameterized `isGating(f)` call that silently drifts from whatever
+// `gateOn` a caller actually passed to deriveVerdict.
+export const DEFAULT_GATE: Severity[] = ["blocker", "major"];
 
 // Severity, worst first. Used to label a FAIL's `reason` with the highest
 // severity actually present among the gating findings — `gateOn` (not this

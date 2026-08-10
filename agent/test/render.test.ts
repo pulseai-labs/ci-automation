@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { renderReport } from "../src/stage3/render";
 import { finalize } from "../src/stage3/index";
+import { deriveVerdict } from "../src/stage3/verdict";
 import type { Finding, ReviewResult, EvidencePack } from "../src/types";
 
 const pack = { head: "abc", diff: "", changed: [], symbols: [], clippy: [],
@@ -166,6 +167,44 @@ test("renders findings under three headings — Blocking, Other findings (do not
   }
   // Adjacent: the marked-adjacent finding — after the "Adjacent" heading.
   expect(posOf("F-adjacent")).toBeGreaterThan(adjacentStart);
+});
+
+// N2: I2's fix shared the isGating() PREDICATE between verdict.ts and
+// render.ts, but not the `gateOn` ARGUMENT — render.ts called the
+// unparameterized `isGating(f)`, which always used DEFAULT_GATE regardless
+// of what `gateOn` the caller actually passed to `deriveVerdict`. With a
+// non-default `gateOn` that also gates on "minor", deriveVerdict counts
+// BOTH findings below as gating ("2 gating finding(s)"), but the old
+// render.ts still only put the blocker under "### Blocking" and filed the
+// minor under "### Other findings (do not gate)" — a heading that
+// literally says it does not gate, directly contradicting the verdict
+// above it. renderReport() must be called with the SAME `gateOn` the
+// verdict used to stay in agreement.
+test("N2: renderReport's gateOn must match the caller's own gateOn used for the verdict, or the report disagrees with it", () => {
+  const mk = (severity: Finding["severity"], title: string): Finding => ({
+    severity, category: "correctness", path: "src/a.rs", line: 1,
+    title, rationale: "r", failure_scenario: "s", suggested_fix: "x",
+    source: "agent", confidence: 1,
+  });
+  const findings = [mk("blocker", "a-blocker"), mk("minor", "a-minor")];
+  const customGate: Finding["severity"][] = ["blocker", "major", "minor"];
+
+  const verdictPack: EvidencePack = { ...pack, changed: [{ path: "src/a.rs", added: 1, removed: 0 }] };
+  const v = deriveVerdict(findings, verdictPack, customGate);
+  expect(v.verdict).toBe("FAIL");
+  expect(v.reason).toBe("2 gating finding(s), highest severity blocker");
+
+  const r: ReviewResult = { verdict: v.verdict, reason: v.reason, findings, degraded: [], capped: [] };
+  const md = renderReport(r, pack, customGate);
+
+  // Both findings land under "### Blocking" — matching the verdict's count
+  // of 2 — and no "### Other findings (do not gate)" heading exists at
+  // all, since nothing is left over once `gateOn` is applied consistently.
+  const headings = md.split("\n").filter(l => l.startsWith("### "));
+  expect(headings).toEqual(["### Blocking"]);
+  const blockingStart = md.indexOf("### Blocking");
+  expect(md.indexOf("#### a-blocker")).toBeGreaterThan(blockingStart);
+  expect(md.indexOf("#### a-minor")).toBeGreaterThan(blockingStart);
 });
 
 test("gating findings render in severity rank order, not input order", () => {
