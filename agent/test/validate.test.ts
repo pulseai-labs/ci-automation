@@ -207,6 +207,40 @@ test("C1: normalizes an equivalent but differently-spelled path before checking 
   expect(r.kept).toEqual([{ ...f({ path: "./src/a.rs", line: 2 }), path: "src/a.rs", adjacent: false }]);
 });
 
+// --- N1: normalize BEFORE keying, not just before the adjacency lookup ---
+
+// Two spellings of the identical finding ("src/a.rs" and "./src/a.rs")
+// must collapse to ONE kept finding with a recorded "duplicate" drop — not
+// two gating findings at the same rendered location with nothing in
+// `dropped` to explain it. Before N1, `key()` (used by both the
+// deterministic-dedupe check and the same-list `seen` dedupe) was keyed on
+// the raw, unnormalized `f.path`, so the two spellings produced two
+// different keys and both survived into `kept` — a fail-OPEN double count.
+test("N1: two differently-spelled paths for the identical finding dedupe to one kept finding", () => {
+  const spelledPlain = f({ path: "src/a.rs", line: 2, title: "the-finding" });
+  const spelledDotSlash = f({ path: "./src/a.rs", line: 2, title: "the-same-finding" });
+  const r = validate([spelledPlain, spelledDotSlash], pack, repo);
+  expect(r.kept).toEqual([{ ...spelledPlain, adjacent: false }]);
+  expect(r.dropped).toEqual([
+    { finding: spelledDotSlash, why: "duplicate finding", code: "duplicate" },
+  ]);
+});
+
+// The same normalize-before-key gap also let an agent finding spelled
+// "./src/a.rs" slip past the duplicate-of-deterministic check against a
+// clippy finding spelled "src/a.rs" — `deterministicKeys` (built from
+// `pack.clippy`/`pack.semver`) was keyed on THEIR raw paths too.
+test("N1: an agent finding spelled './src/a.rs' dedupes against a clippy finding spelled 'src/a.rs'", () => {
+  const clippyFinding = f({ source: "clippy", path: "src/a.rs", line: 2 });
+  const withClippy: EvidencePack = { ...pack, clippy: [clippyFinding] };
+  const agentFinding = f({ source: "agent", path: "./src/a.rs", line: 2 });
+  const r = validate([agentFinding], withClippy, repo);
+  expect(r.kept).toEqual([]);
+  expect(r.dropped).toEqual([
+    { finding: agentFinding, why: "duplicate of a deterministic finding", code: "duplicate-of-deterministic" },
+  ]);
+});
+
 test("dedupes an agent finding against an identical clippy finding", () => {
   const withClippy: EvidencePack = { ...pack, clippy: [f({ source: "clippy" })] };
   const r = validate([f({ source: "agent" })], withClippy, repo);

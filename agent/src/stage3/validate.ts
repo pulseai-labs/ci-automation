@@ -99,6 +99,19 @@ function diffLines(diff: string): Map<string, Set<number>> {
 const key = (f: Finding) => `${f.path}:${f.line}:${f.category}`;
 
 /**
+ * Repo-relative POSIX spelling of `path` — the SAME normalization the main
+ * loop below applies to every finding it keeps, exposed here so
+ * `deterministicKeys` (built from clippy/semver findings, before the main
+ * loop runs) can be keyed on it too. Without this, an agent finding spelled
+ * "./src/a.rs" would never dedupe against a clippy finding spelled
+ * "src/a.rs" — `key()` is a plain string template, and the two spellings
+ * are different strings.
+ */
+function normalizeRel(repoRoot: string, path: string): string {
+  return relative(repoRoot, resolve(repoRoot, path)).split(sep).join("/");
+}
+
+/**
  * Stable, model-independent identifier for why a finding was dropped — one
  * per drop site below. `why` (kept alongside `code` on each dropped entry)
  * stays free text for logs/debugging, but four of the six `why` strings
@@ -137,8 +150,12 @@ export function validate(
   repo: string,
 ): { kept: Finding[]; dropped: { finding: Finding; why: string; code: DropCode }[] } {
   const touched = diffLines(pack.diff);
-  const deterministicKeys = new Set([...pack.clippy, ...(pack.semver ?? [])].map(key));
   const repoRoot = resolve(repo);
+  // N1: keyed on the SAME normalized path the main loop below uses for
+  // `nf` — see normalizeRel()'s own comment.
+  const deterministicKeys = new Set(
+    [...pack.clippy, ...(pack.semver ?? [])].map(f => key({ ...f, path: normalizeRel(repoRoot, f.path) })),
+  );
 
   const kept: Finding[] = [];
   const dropped: { finding: Finding; why: string; code: DropCode }[] = [];
@@ -168,17 +185,27 @@ export function validate(
       continue;
     }
     // Normalize once to a repo-relative POSIX path and reuse it for every
-    // downstream check — the diff-adjacency lookup below AND the path
-    // stored on the kept finding. `touched` (from diffLines()) is keyed by
-    // the diff's own canonical spelling (e.g. "src/a.rs"); a model emitting
-    // an equivalent but differently-spelled path (e.g. "./src/a.rs")
-    // resolves to the same file for the filesystem checks below via
+    // downstream check — the diff-adjacency lookup below, the DEDUPE keys
+    // (N1: a previous version of this fix normalized only the adjacency
+    // lookup and the stored path, leaving `key()` — used for both the
+    // deterministic-duplicate check and the same-list `seen` dedupe —
+    // still keyed on the raw, unnormalized `f.path`; two spellings of one
+    // finding, e.g. "src/a.rs" and "./src/a.rs", produced two different
+    // dedupe keys and both survived into `kept`, double-counting a gating
+    // finding with no drop recorded at all — a fail-OPEN, not fail-closed),
+    // and the path stored on the kept finding. `touched` (from
+    // diffLines()) is keyed by the diff's own canonical spelling (e.g.
+    // "src/a.rs"); a model emitting an equivalent but differently-spelled
+    // path resolves to the same file for the filesystem checks below via
     // `resolve()`, but as a RAW STRING it would never equal a `touched` key
-    // — silently missing the map and coming back `adjacent: true`, the same
-    // silent gate downgrade this file's other fix (only re-deciding
-    // adjacency for `source === "agent"`) closes for source-based
-    // mismatches.
+    // or another finding's dedupe key.
+    //
+    // `nf` ("normalized finding") is what every downstream key/lookup uses
+    // from here on; `f` (the raw, model-supplied finding) is kept only for
+    // the `why` messages below, which deliberately echo back what the
+    // model actually wrote.
     const relPath = relative(repoRoot, abs).split(sep).join("/");
+    const nf: Finding = { ...f, path: relPath };
     if (!existsSync(abs)) {
       dropped.push({ finding: f, why: `path does not exist at head: ${f.path}`, code: "path-missing" });
       continue;
@@ -195,15 +222,16 @@ export function validate(
     // Only a model-authored finding can be a duplicate OF a deterministic one.
     // Applying this to clippy/semver findings themselves would drop every one of
     // them, since deterministicKeys is built from exactly those findings.
-    if (f.source === "agent" && deterministicKeys.has(key(f))) {
+    // Keyed on `nf` (normalized path), not `f` — see the comment above.
+    if (f.source === "agent" && deterministicKeys.has(key(nf))) {
       dropped.push({ finding: f, why: "duplicate of a deterministic finding", code: "duplicate-of-deterministic" });
       continue;
     }
-    if (seen.has(key(f))) {
+    if (seen.has(key(nf))) {
       dropped.push({ finding: f, why: "duplicate finding", code: "duplicate" });
       continue;
     }
-    seen.add(key(f));
+    seen.add(key(nf));
     // C1: only a MODEL-AUTHORED finding's adjacency is re-decided here.
     // `clippy` and `semver` findings are deterministic tool output that
     // stage 1 already scoped correctly — clippy via `rangeTouched` (line-
@@ -218,8 +246,7 @@ export function validate(
     // would downgrade a clippy span whose `line` (line_start) lands on a
     // context row even though the span, correctly, overlaps a changed one.
     kept.push({
-      ...f,
-      path: relPath,
+      ...nf,
       adjacent: f.source === "agent" ? !(touched.get(relPath)?.has(f.line) ?? false) : false,
     });
   }
