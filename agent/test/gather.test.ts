@@ -133,12 +133,19 @@ function manyLinesFixtureRepo(n: number): string {
 
 /** `n` synthetic `cargo clippy --message-format=json` diagnostic lines, one
  *  per source line 1..n, each with a `titleLen`-byte padding tail so the
- *  serialized section's total size is controllable. Sorted input order
- *  (ascending line, ascending title) matches gather's own trim sort key
- *  (path, then line, then title), so the kept prefix is exactly lines 1..k. */
+ *  serialized section's total size is controllable. Emitted in DESCENDING
+ *  line order (n down to 1) so stdout order and gather's sorted order
+ *  (path, then ascending line, then title) actively disagree — real
+ *  `cargo clippy --message-format=json` interleaves diagnostics across
+ *  parallel codegen units, so it is the sort, not clippy's output order,
+ *  that must produce a byte-stable section. An ascending fixture would make
+ *  the `.sort(...)` at index.ts a no-op and let a dropped or inverted
+ *  comparator pass silently — see the Fix 1 RED-phase mutation runs in
+ *  task-5-report.md's "Fix round 3". The sorted (kept) prefix is still
+ *  lines 1..k regardless of emission order. */
 function clippyDiagnostics(n: number, titleLen: number): string {
   const lines: string[] = [];
-  for (let i = 1; i <= n; i++) {
+  for (let i = n; i >= 1; i--) {
     const title = `finding-${String(i).padStart(3, "0")}-${"x".repeat(titleLen)}`;
     lines.push(JSON.stringify({
       reason: "compiler-message",
@@ -203,6 +210,10 @@ exit 1
     expect(p.budget.capped).toEqual(["clippy"]);
     const expectedKept = rawFindings.slice(0, keptCount);
     expect(p.clippy).toEqual(expectedKept);
+    // The invariant the snapshot above exists to demonstrate: the kept
+    // section actually fits the cap. Survives future changes to Finding's
+    // shape, which would otherwise silently invalidate the hardcoded 44.
+    expect(Buffer.byteLength(JSON.stringify(p.clippy), "utf8")).toBeLessThanOrEqual(CAPS.clippy);
   } finally { rmSync(repo, { recursive: true, force: true }); }
 });
 
@@ -295,5 +306,9 @@ test("fixture: gather trims same-container symbols to the exact kept set, determ
     const expectedKept = Array.from({ length: 8 }, (_, i) => `f${String(i).padStart(2, "0")}`);
     expect(a.symbols.map(s => s.name)).toEqual(expectedKept);
     expect(JSON.stringify(a)).toBe(JSON.stringify(b));
+    // The invariant the snapshot above exists to demonstrate: the kept
+    // section actually fits the cap. Survives future changes to SymbolInfo's
+    // shape, which would otherwise silently invalidate the hardcoded 8.
+    expect(Buffer.byteLength(JSON.stringify(a.symbols), "utf8")).toBeLessThanOrEqual(CAPS.siblings);
   } finally { rmSync(repo, { recursive: true, force: true }); }
 });

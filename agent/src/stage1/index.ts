@@ -54,11 +54,12 @@ export async function gather(o: GatherOpts): Promise<EvidencePack> {
     symbols = [...symbols].sort((a, b) =>
       a.path.localeCompare(b.path) || a.name.localeCompare(b.name));
     const kept: typeof symbols = [];
-    let used = 0;
+    let used = 2; // '[' + ']' of the serialized array
     for (const s of symbols) {
       const size = Buffer.byteLength(JSON.stringify(s), "utf8");
-      if (used + size > CAPS.siblings) break;
-      kept.push(s); used += size;
+      const sep = kept.length === 0 ? 0 : 1; // ',' separating this element from the previous one
+      if (used + size + sep > CAPS.siblings) continue;
+      kept.push(s); used += size + sep;
     }
     symbols = kept;
     capped.push("symbols");
@@ -80,11 +81,12 @@ export async function gather(o: GatherOpts): Promise<EvidencePack> {
       clippy = [...clippy].sort((a, b) =>
         a.path.localeCompare(b.path) || (a.line - b.line) || a.title.localeCompare(b.title));
       const kept: typeof clippy = [];
-      let used = 0;
+      let used = 2; // '[' + ']' of the serialized array
       for (const f of clippy) {
         const size = Buffer.byteLength(JSON.stringify(f), "utf8");
-        if (used + size > CAPS.clippy) break;
-        kept.push(f); used += size;
+        const sep = kept.length === 0 ? 0 : 1; // ',' separating this element from the previous one
+        if (used + size + sep > CAPS.clippy) continue;
+        kept.push(f); used += size + sep;
       }
       clippy = kept;
       capped.push("clippy");
