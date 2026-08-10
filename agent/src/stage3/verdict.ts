@@ -15,6 +15,20 @@ const DEFAULT_GATE: Severity[] = ["blocker", "major"];
 export const SEVERITY_RANK: Severity[] = ["blocker", "major", "minor", "nit"];
 
 /**
+ * The single definition of "does this finding gate the merge" — exported so
+ * stage3/render.ts can split its report the same way this function derives
+ * the verdict, instead of carrying its own, different, "gating" predicate
+ * (fix-round-review I2: render.ts used to bucket on `!f.adjacent` alone,
+ * with no severity check at all, which could label a non-adjacent minor or
+ * nit finding as "gating" even though it never gated anything here).
+ */
+export function isGating(f: Finding, gateOn: Severity[] = DEFAULT_GATE): boolean {
+  // Adjacent findings (stage3/validate.ts marks findings outside the diff's
+  // touched lines `adjacent: true`) never gate, whatever their severity.
+  return !f.adjacent && gateOn.includes(f.severity);
+}
+
+/**
  * Derive the merge verdict from typed `Finding` fields only — never from a
  * regex or substring match over `title`, `rationale`, `failure_scenario`,
  * or any other prose field. The classifier this replaces scans review
@@ -30,9 +44,28 @@ export function deriveVerdict(
   if (pack.changed.length === 0) {
     return { verdict: "INCONCLUSIVE", reason: "no changed Rust files in this diff" };
   }
-  // Adjacent findings (stage3/validate.ts marks findings outside the diff's
-  // touched lines `adjacent: true`) never gate, whatever their severity.
-  const gating = findings.filter(f => !f.adjacent && gateOn.includes(f.severity));
+  // C1-D: a byte-capped diff (stage1/diff.ts's `cap()`) makes validate()'s
+  // adjacency computation for AGENT findings unreliable — `touched` was
+  // built by walking a diff that may have been cut off mid-hunk, so a real
+  // finding sitting in the truncated region can come back `adjacent: true`
+  // and silently fail to gate (a fail-open). Only go INCONCLUSIVE when the
+  // truncation could actually have changed a gating decision: the diff was
+  // capped AND at least one agent-authored finding whose severity would
+  // otherwise gate (`gateOn`) was marked adjacent. Deliberately NOT every
+  // capped diff — a huge PR with no findings at all, or with only
+  // non-gating-severity findings, is unaffected by this uncertainty and
+  // must still resolve normally, or every large PR would become
+  // unmergeable regardless of its actual content.
+  if (pack.budget.capped.includes("diff")) {
+    const uncertain = findings.filter(f => f.source === "agent" && f.adjacent && gateOn.includes(f.severity));
+    if (uncertain.length > 0) {
+      return {
+        verdict: "INCONCLUSIVE",
+        reason: `diff truncated: cannot confirm ${uncertain.length} finding(s) marked adjacent are pre-existing`,
+      };
+    }
+  }
+  const gating = findings.filter(f => isGating(f, gateOn));
   if (gating.length > 0) {
     const worst = SEVERITY_RANK.find(s => gating.some(f => f.severity === s))!;
     return { verdict: "FAIL", reason: `${gating.length} gating finding(s), highest severity ${worst}` };

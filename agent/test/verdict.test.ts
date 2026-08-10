@@ -2,9 +2,9 @@ import { test, expect } from "bun:test";
 import { deriveVerdict } from "../src/stage3/verdict";
 import type { Finding, EvidencePack } from "../src/types";
 
-const pack = (changed: number) => ({
+const pack = (changed: number, capped: string[] = []) => ({
   head: "0".repeat(40), diff: "", changed: Array(changed).fill({ path: "a.rs", added: 1, removed: 0 }),
-  symbols: [], clippy: [], budget: { bytes: 0, capped: [] }, degraded: [],
+  symbols: [], clippy: [], budget: { bytes: 0, capped }, degraded: [],
 } as unknown as EvidencePack);
 
 function f(over: Partial<Finding> = {}): Finding {
@@ -88,12 +88,69 @@ test("an explicit non-default gateOn gates on that severity, with an accurate re
 // plus a non-gating minor and an adjacent blocker that must both be
 // excluded from the count) pins the rank order, the count, and the
 // exclusion rules all at once.
+// Fixture order deliberately does NOT put the blocker first (Also-fix item
+// 3): a positional implementation (`const worst = gating[0]!.severity`)
+// would read "major" off this list's first *gating* entry (the leading
+// "major" survives the adjacent/gateOn filter same as the "blocker" does)
+// and still report "highest severity major" — passing the old fixture,
+// which listed the blocker first, by coincidence of position rather than
+// by actually finding the worst rank. The non-adjacent blocker sits third;
+// the expected reason string is unchanged.
 test("a mixed gating set reports the count of gating findings and the worst severity present", () => {
   const v = deriveVerdict(
-    [f({ severity: "blocker" }), f({ severity: "major" }), f({ severity: "minor" }),
+    [f({ severity: "major" }), f({ severity: "minor" }), f({ severity: "blocker" }),
      f({ severity: "blocker", adjacent: true })], pack(3));
   expect(v.verdict).toBe("FAIL");
   expect(v.reason).toBe("2 gating finding(s), highest severity blocker");
+});
+
+// --- C1-D: a truncated diff must not silently un-gate an agent finding ---
+
+// The diff's byte cap (stage1/diff.ts's cap()) can cut a hunk off mid-way,
+// making validate()'s `touched` map (and therefore adjacency for AGENT
+// findings) unreliable. Precise trigger: capped AND at least one
+// agent-authored, gate-eligible finding came back `adjacent: true`.
+test("C1-D: a truncated diff with a gate-eligible agent finding marked adjacent is INCONCLUSIVE, not silently PASS", () => {
+  const v = deriveVerdict([f({ severity: "major", adjacent: true })], pack(3, ["diff"]));
+  expect(v.verdict).toBe("INCONCLUSIVE");
+  expect(v.reason).toBe("diff truncated: cannot confirm 1 finding(s) marked adjacent are pre-existing");
+});
+
+// Precision half 1: a capped diff with no findings at all must not become
+// INCONCLUSIVE — that would make every large PR with a clean review
+// unmergeable regardless of content, exactly what C1-D says not to do.
+test("C1-D: a truncated diff with no findings at all is not punished with INCONCLUSIVE", () => {
+  const v = deriveVerdict([], pack(3, ["diff"]));
+  expect(v.verdict).toBe("PASS");
+  expect(v.reason).toBe("no findings");
+});
+
+// Precision half 2: an adjacent agent finding whose severity would never
+// have gated anyway (not in gateOn) carries no gating uncertainty for the
+// truncation to have changed — must still resolve normally.
+test("C1-D: a truncated diff with only a non-gating-severity adjacent finding is not punished with INCONCLUSIVE", () => {
+  const v = deriveVerdict([f({ severity: "minor", adjacent: true })], pack(3, ["diff"]));
+  expect(v.verdict).toBe("PASS");
+  expect(v.reason).toBe("1 non-gating finding(s)");
+});
+
+// A capped diff with a real, non-adjacent gating finding carries no
+// uncertainty about THAT finding (it wasn't marked adjacent) — FAIL as
+// normal, not INCONCLUSIVE.
+test("C1-D: a truncated diff with a non-adjacent gating finding is unaffected — FAIL, not INCONCLUSIVE", () => {
+  const v = deriveVerdict([f({ severity: "major" })], pack(3, ["diff"]));
+  expect(v.verdict).toBe("FAIL");
+  expect(v.reason).toBe("1 gating finding(s), highest severity major");
+});
+
+// A clippy/semver-sourced finding marked adjacent in a capped diff carries
+// no uncertainty either — C1 already made stage 3 never re-decide adjacency
+// for a deterministic source, so `source === "agent"` is exactly the right
+// filter here too, not merely a convenient one.
+test("C1-D: a truncated diff with a deterministic (non-agent) adjacent finding is unaffected", () => {
+  const v = deriveVerdict([f({ severity: "major", source: "clippy", adjacent: true })], pack(3, ["diff"]));
+  expect(v.verdict).toBe("PASS");
+  expect(v.reason).toBe("1 non-gating finding(s)");
 });
 
 test("an adjacent major does NOT gate", () => {
