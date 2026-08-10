@@ -27,7 +27,11 @@ import { SEVERITY_RANK } from "./verdict";
  * Fix round 4 replaces column-counting with three mechanisms, chosen per
  * field so that NO container can ever form around model-supplied text in
  * the first place. That makes the coordinate-system argument moot rather
- * than trying to win it one more time:
+ * than trying to win it one more time. Fix round 5 (reviewer-confirmed
+ * closed: 290 payload/slot combinations, 18 fence-break attempts, all
+ * three container probes — zero leaks) added a fourth variant of
+ * mechanism 1 to recover paragraph structure without reopening any of
+ * that:
  *
  *   1. SINGLE-LINE FIELDS (escLine, below): collapse every line
  *      terminator to a single space, then guard the ONE remaining
@@ -37,9 +41,21 @@ import { SEVERITY_RANK } from "./verdict";
  *      second, container-relative line to exist, so there is no
  *      coordinate system left for a guard to get wrong. The one guarded
  *      position covers every way CommonMark opens a block at a line's
- *      start: ATX heading `#`, blockquote `>`, setext underline `=`/`-`,
- *      bullet list `-`/`+`/`*`, ordered list (digits then `.` or `)`),
- *      link reference definition `[`, and a backtick/tilde fence.
+ *      start: ATX heading `#`, setext underline `=`/`-`, bullet list
+ *      `-`/`+`/`*`, ordered list (digits then `.` or `)`), link reference
+ *      definition `[`, and a backtick/tilde fence. (Blockquote `>` is
+ *      NOT in this set — see the `<`/`>` paragraph below for why.)
+ *   1b. MULTI-LINE BLOCK FIELDS (escParagraphs, below): the SAME
+ *      predicate as escLine — "does this string contain a line break" —
+ *      applied per piece instead of once. Splits on every line break,
+ *      runs escLine on each resulting piece independently, drops empty
+ *      pieces, and rejoins with a blank line. Every emitted line is still
+ *      a renderer-controlled, single-line, guarded paragraph; the blank
+ *      line between pieces is what keeps a container from spanning two
+ *      of them and defeats a setext underline (which needs no blank line
+ *      between the paragraph and the underline). This is not a new
+ *      mechanism, only mechanism 1 applied more than once per field — see
+ *      escParagraphs's own comment.
  *   2. suggested_fix (codeBlock, below): a renderer-OWNED fenced code
  *      block, opened with more backticks than any run already present in
  *      the content. Nothing inside a fenced code block is markdown, at
@@ -67,10 +83,12 @@ import { SEVERITY_RANK } from "./verdict";
  *   category              escLine            class 1
  *   line                  Number()           class 3
  *   confidence            Number()           class 3
- *   rationale             escLine            class 1 — previously
- *                                             block-preserving; see
- *                                             escLine's comment for why
- *   failure_scenario      escLine            class 1 — same change
+ *   rationale             escParagraphs      class 1b — collapsed
+ *                                             (class 1) in fix round 4;
+ *                                             fix round 5 recovers
+ *                                             paragraph structure without
+ *                                             changing the predicate
+ *   failure_scenario      escParagraphs      class 1b — same change
  *   suggested_fix         codeBlock          class 2
  *   reason                escLine            class 1 — not model-supplied
  *                                             through the normal
@@ -78,38 +96,38 @@ import { SEVERITY_RANK } from "./verdict";
  *                                             readResult() JSON.parses a
  *                                             ReviewResult with no schema
  *                                             validation
+ *   verdict                escLine           class 1 — same readResult()
+ *                                             caveat as `reason`; fix
+ *                                             round 4 left this out of
+ *                                             scope, fix round 5 closes it
  *   degraded[], capped[]  escLine per entry  class 1
- *   verdict                (not escaped)     a typed Verdict union set by
- *                                             deriveVerdict(), never
- *                                             model-supplied through the
- *                                             normal path. Carries the
- *                                             same readResult() caveat as
- *                                             `reason` above but is out of
- *                                             this round's stated scope —
- *                                             flagged, not fixed; see the
- *                                             fix-round-4 report.
- *   pack.head, usage.*     (not model input) stage 1's own git SHA and
- *                                             the model API's own usage
- *                                             counters — head still goes
- *                                             through escLine defensively,
- *                                             usage.* are always numbers
+ *   pack.head              escLine           not model input — stage 1's
+ *                                             own git SHA — escaped
+ *                                             defensively anyway
+ *   pack.budget.bytes      (not escaped)     not model input — stage 1's
+ *                                             own byte-budget count,
+ *                                             always a number
+ *   usage.*                (not escaped)     not model input — the model
+ *                                             API's own usage counters,
+ *                                             always numbers
  *
  * `<`/`>` are additionally escaped to HTML entities everywhere class 1
- * touches, unconditionally — not only at the line-start position —
- * because raw HTML is an INLINE construct CommonMark recognizes anywhere
- * in a paragraph, unlike headings/fences/lists/blockquotes, which only
- * open from a line's start. That single unconditional rule is exactly
- * what makes `<` safe to leave out of the line-start marker set: there is
- * never an unescaped `<` anywhere in class-1 output for anything to pair
- * with.
+ * (and 1b) touches, unconditionally — not only at the line-start position
+ * — because raw HTML is an INLINE construct CommonMark recognizes
+ * anywhere in a paragraph, unlike headings/fences/lists/blockquotes,
+ * which only open from a line's start. That single unconditional rule is
+ * exactly what makes both `<` and `>` safe to leave out of the line-start
+ * marker set: there is never an unescaped `<` OR `>` anywhere in
+ * class-1(b) output for anything to pair with, and `guardLineStart`
+ * itself notes why an entry for `>` there specifically would be dead
+ * code, not defense in depth.
  *
  * Deliberately still not guarded, because none of it can forge a heading
- * or open an HTML block: thematic breaks, and — now that every field
- * that could otherwise form one is collapsed to a single line — list
- * markers, blockquote markers, and setext underlines appearing anywhere
- * other than the one guarded position. They render as inert prose
- * characters, not as containers, because a single-line field has no
- * second line for them to open a container onto.
+ * or open an HTML block: thematic breaks, and list/blockquote/setext
+ * markers appearing anywhere other than the start of a guarded piece.
+ * They render as inert prose characters, not as containers, because
+ * every class-1(b) piece is a single physical line with no second line
+ * for them to open a container onto.
  */
 
 // U+2028 LINE SEPARATOR and U+2029 PARAGRAPH SEPARATOR, built from numeric
@@ -137,9 +155,15 @@ const LINE_BREAK_RE = new RegExp(`[\r\n${String.fromCodePoint(0x2028, 0x2029)}]+
  * breaks the match just as well, and — because `.`/`)` ARE escapable
  * punctuation — it is fully lossless once rendered, unlike escaping the
  * digit.
+ *
+ * Deliberately does NOT include `>` (blockquote): `escLine` below always
+ * entity-escapes `<`/`>` before calling this function, so a leading `>`
+ * has already become `&gt;` by the time this regex ever sees the string —
+ * an entry for it here could never fire. Adding one back would be dead
+ * code, not defense in depth.
  */
 function guardLineStart(t: string): string {
-  return t.replace(/^(\d+)([.)])|^([#>=+*`~[-])/, (_m, digits, delim, marker) =>
+  return t.replace(/^(\d+)([.)])|^([#=+*`~[-])/, (_m, digits, delim, marker) =>
     digits !== undefined ? `${digits}\\${delim}` : `\\${marker}`,
   );
 }
@@ -151,22 +175,62 @@ function guardLineStart(t: string): string {
  * comment: with no interior line break, no list item or blockquote can
  * form inside the field, so there is no container-relative coordinate
  * system left for a guard to get wrong. This is what replaces fix round
- * 3's column-counting guards.
+ * 3's column-counting guards, and the SAME predicate — "does this string
+ * contain a line break" — is what `escParagraphs()` below applies per
+ * piece instead of once, for fields that need to keep their paragraph
+ * breaks.
  *
- * Now used for `rationale` and `failure_scenario` too, which previously
- * preserved internal newlines. That is deliberate, not a regression: a
- * rationale is a few sentences of review prose, not a document that needs
- * multiple paragraphs to be useful, and collapsing it converts the
- * security argument from "can this shape of grammar hide a container" —
- * an ever-growing question, per fix rounds 1 through 3 — into "does this
- * string contain a line break," which is arithmetic, checked once, and
- * cannot be reopened by a new piece of CommonMark grammar nobody thought
- * of yet.
+ * Used directly (whole-field collapse) for slots that are genuinely a
+ * single line of content by nature: `title`, `path`, `severity`,
+ * `category`, `reason`, `verdict`, and each footer entry. `rationale` and
+ * `failure_scenario` used this directly too in fix round 4 — see fix
+ * round 5, Fix 2 for why they now go through `escParagraphs()` instead.
  */
 function escLine(s: string): string {
   const collapsed = String(s).replace(LINE_BREAK_RE, " ").trim();
   const angleEscaped = collapsed.replace(/[<>]/g, c => (c === "<" ? "&lt;" : "&gt;"));
   return guardLineStart(angleEscaped);
+}
+
+/**
+ * Preserve paragraph structure for a block field (`rationale`,
+ * `failure_scenario`) without weakening class 1's security argument. Fix
+ * round 4 collapsed these fields the same as every other class-1 field —
+ * correctly closing the invariant, but at a real fidelity cost: a
+ * realistic multi-paragraph rationale rendered as one run-on line with
+ * stray list/quote markers inline.
+ *
+ * Splits the field on every line break, runs `escLine()` on each piece
+ * INDEPENDENTLY, drops any piece that comes out empty (a run of blank
+ * lines collapses to nothing rather than an empty paragraph), then
+ * rejoins the pieces with a blank line (`\n\n`). Every emitted line is
+ * therefore still a renderer-controlled, trimmed, single-line paragraph
+ * with its OWN guarded start position — exactly `escLine()`'s guarantee,
+ * just applied once per piece instead of once per field:
+ *
+ *   - No container can span two pieces, because a blank line always
+ *     separates them and a list item or blockquote cannot continue across
+ *     one.
+ *   - No piece carries indentation into the next, because each is
+ *     independently trimmed.
+ *   - A setext underline needs a paragraph immediately followed — no
+ *     blank line — by a line of solely `=`/`-`; splitting on every line
+ *     break and rejoining with `\n\n` guarantees a blank line between
+ *     every pair of adjacent pieces, so that adjacency can never occur.
+ *
+ * The predicate stays exactly "does this string contain a line break" —
+ * this function does not reason about CommonMark grammar at all, only
+ * about where THIS string's line breaks are — so nothing about class 1's
+ * closed argument (see the file-level comment) changes; splitting first
+ * only changes how many single-line pieces one field's text is cut into
+ * before that unchanged predicate runs on each.
+ */
+function escParagraphs(s: string): string {
+  return String(s)
+    .split(LINE_BREAK_RE)
+    .map(escLine)
+    .filter(piece => piece.length > 0)
+    .join("\n\n");
 }
 
 /**
@@ -222,9 +286,9 @@ function row(f: Finding): string {
     ``,
     `\`${escCode(f.path)}:${Number(f.line)}\` · **${escLine(f.severity)}** · ${escLine(f.category)} · confidence ${Number(f.confidence)}`,
     ``,
-    escLine(f.rationale),
+    escParagraphs(f.rationale),
     ``,
-    `**Failure scenario:** ${escLine(f.failure_scenario)}`,
+    `**Failure scenario:** ${escParagraphs(f.failure_scenario)}`,
     ``,
     `**Suggested fix:**`,
     ``,
@@ -259,11 +323,12 @@ export function renderReport(r: ReviewResult, pack: EvidencePack): string {
   const adjacent = r.findings.filter(f => f.adjacent);
 
   const out: string[] = [];
-  // `reason` is internally generated by deriveVerdict() today, but
-  // readResult() JSON.parses a ReviewResult off disk with no schema
-  // validation — this slot is not guaranteed trusted either. See the
-  // file-level comment for the full interpolation-site list.
-  out.push(`## VERDICT: ${r.verdict}`, ``, escLine(r.reason), ``);
+  // `verdict` and `reason` are both internally generated (deriveVerdict())
+  // through the normal finalize() path, but readResult() JSON.parses a
+  // ReviewResult off disk with no schema validation — neither slot is
+  // guaranteed trusted. See the file-level comment for the full
+  // interpolation-site list.
+  out.push(`## VERDICT: ${escLine(r.verdict)}`, ``, escLine(r.reason), ``);
 
   if (gating.length) {
     out.push(`### Findings`, ``);

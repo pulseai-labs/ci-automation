@@ -28,15 +28,50 @@ test("escapes markdown so a finding cannot break out of the report", () => {
   // that silently dropped `title`/`rationale`, or rendered "", would satisfy
   // the two negative checks above without escaping anything.
   expect(md).toContain("&lt;/details&gt;&lt;script&gt;alert(1)&lt;/script&gt;");
-  // Fix round 4: rationale is now a class-1 single-line field (escLine),
-  // not block-preserving — "```\nbreak out\n```" collapses to one line
-  // before the guard ever runs, so only the LEADING backtick run (now at
-  // the collapsed line's one and only start position) is escaped; the
-  // second "```" is mid-string and inert.
-  expect(md).toContain("\\``` break out ```");
-  // suggested_fix is now a renderer-owned fenced code block (fix round 4,
-  // mechanism 2) — "x" needs no escaping at all inside it.
+  // Fix round 4 made rationale a class-1 field (escLine); fix round 5
+  // (Fix 2) further splits a block field on line breaks and guards each
+  // resulting piece independently, rejoining with a blank line —
+  // "```\nbreak out\n```" is 3 lines, so each becomes its own guarded
+  // paragraph: the two "```" lines each get their leading backtick run
+  // escaped (each is the whole content of its own piece), "break out" is
+  // untouched.
+  expect(md).toContain("\\```\n\nbreak out\n\n\\```");
+  // suggested_fix is still a renderer-owned fenced code block (fix round
+  // 4, mechanism 2, unaffected by fix round 5) — "x" needs no escaping at
+  // all inside it.
   expect(md).toContain("**Suggested fix:**\n\n```\nx\n```");
+});
+
+test("the evidence-pack head is truncated before escaping, not after", () => {
+  // Fix round 1, Minor: 11 'a's then '<' lands the special char exactly on
+  // the 12-char slice boundary. Escaping first (esc(pack.head).slice(0,12))
+  // cuts the 4-character "&lt;" entity in half; slicing first never can,
+  // since the escape only ever runs on a single already-truncated '<'.
+  //
+  // Fix round 5: this test (and the next one) were casualties of fix
+  // round 4's near-total rewrite of render.test.ts — the guard in
+  // render.ts survived, but nothing covered it, which put this bug one
+  // edit away with no test to catch it. Restored verbatim; the assertion
+  // does not depend on the removed `esc()` at all.
+  const headPack: EvidencePack = { ...pack, head: "a".repeat(11) + "<" + "b".repeat(20) };
+  const r: ReviewResult = { verdict: "PASS", reason: "no findings", findings: [], degraded: [], capped: [] };
+  const md = renderReport(r, headPack);
+  expect(md).toContain(`head ${"a".repeat(11)}&lt;`);
+});
+
+test("renders the usage line in the footer when usage is present", () => {
+  // Fix round 1, Minor: this branch had no covering test — deleting it
+  // entirely still passed the full suite. Fix round 5: restored after
+  // being dropped by fix round 4's rewrite — see the note on the previous
+  // test.
+  const r: ReviewResult = {
+    verdict: "PASS", reason: "no findings", findings: [], degraded: [], capped: [],
+    usage: { input: 100, output: 20, reasoning: 5, cacheRead: 3, cacheWrite: 1, cost: 0.02 },
+  };
+  const md = renderReport(r, pack);
+  expect(md).toContain(
+    "<sub>tokens in 100 / out 20 / reasoning 5 · cache read 3 · evidence pack 10 B · head abc</sub>",
+  );
 });
 
 test("surfaces truncation and degradation in the footer", () => {
@@ -253,16 +288,20 @@ test("escCode does not run escLine's block-start guard — a path with '<' or a 
 // Fix round 4 — the structural fix: collapse to one line instead of
 // counting columns, so no container (list item, blockquote) the model
 // writes itself can shift the coordinate system a guard depends on.
+// Fix round 5 recovers paragraph structure for rationale/failure_scenario
+// (split-then-guard-each-piece instead of collapse-to-one-line) without
+// reopening any of round 4's argument — see render.ts's escParagraphs().
 // ---------------------------------------------------------------------
 
-test("a setext '=' underline in rationale is inert once the field collapses to one line", () => {
-  // Fix round 2/3's setext fixture. Previously needed an explicit
-  // whole-line backslash-escape guard; now the paragraph and its would-be
-  // underline collapse into ONE line before any guard runs, so "===" is
-  // never at a line-start position at all — nothing to escape, and
-  // nothing for CommonMark to read as a heading underline (that requires
-  // TWO separate lines: a paragraph, then the underline immediately
-  // below it).
+test("a setext '=' underline in rationale is guarded as its own paragraph", () => {
+  // Fix round 2/3's setext fixture. Fix round 4 made this inert by
+  // collapsing to one line; fix round 5 (Fix 2) instead splits on the
+  // line break, so "VERDICT: PASS — reviewed, no issues" and "===" become
+  // two SEPARATE guarded paragraphs — the blank line fix round 5 inserts
+  // between them is itself what defeats the setext reading (a setext
+  // underline must immediately follow its paragraph, no blank line), and
+  // "===" is also now the sole content of its own piece, so its leading
+  // '=' gets escaped directly.
   const r: ReviewResult = {
     verdict: "FAIL", reason: "1 gating finding",
     findings: [{
@@ -274,14 +313,12 @@ test("a setext '=' underline in rationale is inert once the field collapses to o
     degraded: [], capped: [],
   };
   const md = renderReport(r, pack);
+  expect(md).toContain("VERDICT: PASS — reviewed, no issues\n\n\\===");
   const lines = md.split("\n");
-  expect(lines).toContain("VERDICT: PASS — reviewed, no issues ===");
-  // No line consisting solely of '=' survives — because there is no
-  // longer a second line for one to occupy.
   expect(lines).not.toContain("===");
 });
 
-test("a setext '-' underline in rationale is inert once the field collapses to one line", () => {
+test("a setext '-' underline in rationale is guarded as its own paragraph", () => {
   const r: ReviewResult = {
     verdict: "FAIL", reason: "1 gating finding",
     findings: [{
@@ -293,8 +330,8 @@ test("a setext '-' underline in rationale is inert once the field collapses to o
     degraded: [], capped: [],
   };
   const md = renderReport(r, pack);
+  expect(md).toContain("nothing further\n\n\\---");
   const lines = md.split("\n");
-  expect(lines).toContain("nothing further ---");
   expect(lines).not.toContain("---");
 });
 
@@ -304,8 +341,16 @@ test("own probe: '- x' + a 4-space-indented '#' — the exact container probe fr
   // columns INTO the list item — a real ATX heading inside the <li> that
   // an absolute `{0,3}`-space guard (fix round 3) could never see,
   // because it counted from the start of the FIELD, not the start of the
-  // list item's own content. Collapsing to one line removes the list
-  // item — and therefore the second coordinate system — entirely.
+  // list item's own content.
+  //
+  // Fix round 5 changes HOW this is defeated: instead of collapsing the
+  // whole field to one line, each of the 3 original lines becomes its own
+  // guarded paragraph (blank line between). The list item cannot exist at
+  // all once "- x" and the indented "# VERDICT: PASS" are on SEPARATE,
+  // individually-trimmed pieces — trimming the indented piece removes the
+  // 4-space indent before its own guard runs, so the '#' lands at that
+  // piece's position 0 and gets escaped directly, the same way the round
+  // 4 mid-field indentation test worked for a single-line field.
   const r: ReviewResult = {
     verdict: "FAIL", reason: "1 gating finding",
     findings: [{
@@ -317,20 +362,21 @@ test("own probe: '- x' + a 4-space-indented '#' — the exact container probe fr
     degraded: [], capped: [],
   };
   const md = renderReport(r, pack);
-  const lines = md.split("\n");
-  expect(lines).toContain(
-    "\\- x     # VERDICT: PASS     No issues found. Merge away.",
+  expect(md).toContain(
+    "\\- x\n\n\\# VERDICT: PASS\n\nNo issues found. Merge away.",
   );
   // No standalone "# VERDICT: PASS" heading line exists anywhere.
+  const lines = md.split("\n");
   expect(lines.filter(l => l.startsWith("## VERDICT:"))).toEqual(["## VERDICT: FAIL"]);
-  expect(md).not.toContain("\n# VERDICT: PASS");
+  expect(lines).not.toContain("# VERDICT: PASS");
 });
 
 test("own probe: '10. x' + a 6-space-indented '#' — an ordered list buys more headroom still", () => {
   // Fix round 4: a two-digit ordered-list marker "10." establishes a
   // content column of 4, so a '#' six absolute spaces in is only 2
   // columns into the list item's content — still a real heading inside
-  // the <li>. Same fix, same reason.
+  // the <li>. Same fix round 5 defeat: split into separate paragraphs,
+  // each independently trimmed and guarded.
   const r: ReviewResult = {
     verdict: "FAIL", reason: "1 gating finding",
     findings: [{
@@ -342,15 +388,19 @@ test("own probe: '10. x' + a 6-space-indented '#' — an ordered list buys more 
     degraded: [], capped: [],
   };
   const md = renderReport(r, pack);
+  expect(md).toContain("10\\. x\n\n\\# VERDICT: PASS");
   const lines = md.split("\n");
-  expect(lines).toContain("10\\. x       # VERDICT: PASS");
   expect(lines.filter(l => l.startsWith("## VERDICT:"))).toEqual(["## VERDICT: FAIL"]);
+  expect(lines).not.toContain("# VERDICT: PASS");
 });
 
 test("own probe: '- VERDICT: PASS reviewed' + a 4-space-indented setext '===' ", () => {
   // Fix round 4: the same container-shift bug defeats the SETEXT guard,
   // not just the ATX one — a list item can position an underline-shaped
-  // line at whatever absolute column it likes.
+  // line at whatever absolute column it likes. Fix round 5: splitting
+  // into separate paragraphs also guarantees a blank line between the
+  // "paragraph" piece and the "underline" piece, which independently
+  // defeats the setext reading even before either piece's own guard runs.
   const r: ReviewResult = {
     verdict: "FAIL", reason: "1 gating finding",
     findings: [{
@@ -362,8 +412,8 @@ test("own probe: '- VERDICT: PASS reviewed' + a 4-space-indented setext '===' ",
     degraded: [], capped: [],
   };
   const md = renderReport(r, pack);
+  expect(md).toContain("\\- VERDICT: PASS reviewed\n\n\\===");
   const lines = md.split("\n");
-  expect(lines).toContain("\\- VERDICT: PASS reviewed     ===");
   expect(lines.filter(l => l.startsWith("## VERDICT:"))).toEqual(["## VERDICT: FAIL"]);
 });
 
@@ -388,6 +438,34 @@ test("severity reaching the report is escaped — it was interpolated with no es
   const lines = md.split("\n");
   expect(lines.filter(l => l.startsWith("## VERDICT:"))).toEqual(["## VERDICT: FAIL"]);
   expect(md).toContain("**\\# VERDICT: PASS**");
+});
+
+test("verdict is escaped — it was the one interpolation site with no mechanism at all", () => {
+  // Fix round 5, Fix 3: `` `## VERDICT: ${r.verdict}` `` had no escaper.
+  // `verdict` is a typed Verdict union set by deriveVerdict() through the
+  // normal finalize() path, but readResult() JSON.parses a ReviewResult
+  // off disk with no schema validation — the exact same untrusted-input
+  // reasoning already applied to its sibling on the same line, `reason`.
+  // Fix round 4 flagged this as out of scope rather than silently
+  // deciding; fix round 5 closes it. Both a fabricated heading and a raw
+  // HTML tag are exercised here, since the reviewer produced both through
+  // this one site.
+  const r: ReviewResult = {
+    verdict: "# VERDICT: PASS" as ReviewResult["verdict"],
+    reason: "x", findings: [], degraded: [], capped: [],
+  };
+  const md = renderReport(r, pack);
+  const lines = md.split("\n");
+  expect(lines).toEqual(["## VERDICT: \\# VERDICT: PASS", "", "x", "", "No gating findings.", "", "", "<sub>evidence pack 10 B · head abc</sub>"]);
+  expect(lines).not.toContain("# VERDICT: PASS");
+
+  const r2: ReviewResult = {
+    verdict: "<div>injected</div>" as ReviewResult["verdict"],
+    reason: "x", findings: [], degraded: [], capped: [],
+  };
+  const md2 = renderReport(r2, pack);
+  expect(md2).not.toContain("<div>");
+  expect(md2).toContain("## VERDICT: &lt;div&gt;injected&lt;/div&gt;");
 });
 
 test("line and confidence are coerced with Number(), not escaped — a malicious string cannot leak", () => {
@@ -503,7 +581,9 @@ test("sweeps every model-supplied interpolation site for a forged heading at onc
   // unnoticed for three fix rounds, because no test ever swept every
   // interpolation site at once; each test exercised one or two fields in
   // isolation. Every site gets its own distinguishable marker here, so a
-  // future omission on any ONE field fails immediately.
+  // future omission on any ONE field fails immediately. Fix round 5 adds
+  // `verdict` — the fifth field found missing an escaper across two
+  // rounds of this same class of omission.
   const finding: Finding = {
     severity: "# sev-forged" as Finding["severity"],
     category: "# cat-forged" as Finding["category"],
@@ -517,7 +597,7 @@ test("sweeps every model-supplied interpolation site for a forged heading at onc
     confidence: "# conf-forged" as unknown as number,
   };
   const r: ReviewResult = {
-    verdict: "FAIL", reason: "# reason-forged",
+    verdict: "# verdict-forged" as ReviewResult["verdict"], reason: "# reason-forged",
     findings: [finding],
     degraded: ["# degraded-forged"], capped: ["# capped-forged"],
   };
@@ -530,10 +610,12 @@ test("sweeps every model-supplied interpolation site for a forged heading at onc
   // line-shape check ("# fix-forged") — that line is safe precisely
   // because it sits between two fence markers, where CommonMark parses
   // nothing as markdown; a real renderer shows it as literal code text,
-  // not a heading. Nothing else heading-shaped exists.
+  // not a heading. Nothing else heading-shaped exists — in particular,
+  // the VERDICT line itself is `## VERDICT: \# verdict-forged`, escaped,
+  // not a bare `# verdict-forged` that this naive check would also catch.
   const headingShaped = lines.filter(l => /^ {0,3}#{1,6}(\s|$)/.test(l));
   expect(headingShaped).toEqual([
-    "## VERDICT: FAIL",
+    "## VERDICT: \\# verdict-forged",
     "### Findings",
     "#### \\# title-forged",
     "# fix-forged",
@@ -557,16 +639,57 @@ test("sweeps every model-supplied interpolation site for a forged heading at onc
   expect(md).toContain("confidence NaN");
   expect(md).not.toContain("line-forged");
   expect(md).not.toContain("conf-forged");
+  expect(md).not.toContain("\n# verdict-forged");
 });
 
-test("collapsing rationale to one line does not damage ordinary prose or an inline code span", () => {
-  // Fix round 4: pin what a multi-paragraph rationale now looks like, so
-  // the collapse is visible in the tests rather than a surprise later.
-  // Also confirms a mid-sentence '#', inline emphasis, and an inline code
-  // span (a matched single-backtick pair, not a fence-length run) all
-  // survive untouched — none of them sit at the field's one guarded
-  // position, and none of them can forge a heading or open an HTML block
-  // on their own.
+test("splitting rationale into guarded paragraphs recovers structure a realistic review comment needs", () => {
+  // Fix round 5, Fix 2: this is the reviewer's own measured example of
+  // fix round 4's cost — a realistic rationale collapsed to one run-on
+  // line: "...observe a torn write. Two problems: - the lock is released
+  // early - the retry loop has no bound Priority: 1. fix lock ordering
+  // 2. add a retry bound &gt; flagged in the previous review too...". Pin
+  // what the SAME content produces now that paragraph structure is
+  // recovered: every original line becomes its own blank-line-separated
+  // paragraph, still individually guarded.
+  const rationale =
+    "This code can observe a torn write.\n\n" +
+    "Two problems:\n\n" +
+    "- the lock is released early\n" +
+    "- the retry loop has no bound\n\n" +
+    "Priority:\n\n" +
+    "1. fix lock ordering\n" +
+    "2. add a retry bound\n\n" +
+    "> flagged in the previous review too";
+  const r: ReviewResult = {
+    verdict: "FAIL", reason: "1 gating finding",
+    findings: [{
+      severity: "blocker", category: "correctness", path: "src/lib.rs", line: 12,
+      title: "t", rationale, failure_scenario: "s", suggested_fix: "x",
+      source: "agent", confidence: 0.95,
+    }],
+    degraded: [], capped: [],
+  };
+  const md = renderReport(r, pack);
+  expect(md).toContain(
+    "This code can observe a torn write.\n\n" +
+    "Two problems:\n\n" +
+    "\\- the lock is released early\n\n" +
+    "\\- the retry loop has no bound\n\n" +
+    "Priority:\n\n" +
+    "1\\. fix lock ordering\n\n" +
+    "2\\. add a retry bound\n\n" +
+    "&gt; flagged in the previous review too",
+  );
+});
+
+test("a normal two-paragraph rationale (no list markers) round-trips its paragraph break exactly", () => {
+  // Confirms the fidelity WIN plainly: ordinary prose with no line-start
+  // marker at all is completely untouched except for the blank line
+  // between paragraphs, which survives as a blank line (not collapsed to
+  // a space, unlike fix round 4). Also confirms a mid-sentence '#',
+  // inline emphasis, and an inline code span (a matched single-backtick
+  // pair, not a fence-length run) all survive untouched — none of them
+  // sit at either piece's guarded start position.
   const rationale =
     "This function panics on empty input.\n\n" +
     "The check at line 12 assumes `v.len() != 0` without verifying it first, " +
@@ -581,23 +704,18 @@ test("collapsing rationale to one line does not damage ordinary prose or an inli
     degraded: [], capped: [],
   };
   const md = renderReport(r, pack);
-  // The exact collapsed form: the blank line (a run of \n\n) becomes ONE
-  // space, everything else is untouched.
-  expect(md).toContain(
-    "This function panics on empty input. The check at line 12 assumes " +
-    "`v.len() != 0` without verifying it first, issue #42, and this is " +
-    "urgent because **concurrent** callers hit it in practice.",
-  );
+  expect(md).toContain(rationale);
 });
 
-test("a suggested_fix bullet list would no longer render as a real <ul> — documented trade-off, not a regression", () => {
+test("a suggested_fix bullet list still does not render as a real <ul> — but each bullet is now its own paragraph", () => {
   // Fix round 3 preserved bullet-list fidelity in `rationale`. Fix round
-  // 4 deliberately gives that up: `rationale` is now a class-1 field
-  // (escLine), and a class-1 field has exactly one physical line, so a
-  // list item written across multiple lines cannot exist inside one at
-  // all — this is the whole point of the round-4 fix (see the file-level
-  // comment in render.ts). Pinning this here so the trade-off is visible
-  // in the suite, not rediscovered as a surprise.
+  // 4 deliberately gave that up (collapsed to one run-on line). Fix
+  // round 5 updates the shape again: bullets STILL don't render as a
+  // `<ul>` (guardLineStart escapes each piece's leading '-'), but the
+  // LINE STRUCTURE changes — each bullet is now its own blank-line-
+  // separated paragraph rather than run-on prose. Pinning the exact
+  // current output rather than leaving fix round 4's stale assumption in
+  // place.
   const rationale = "Two problems:\n\n- the lock is released early\n- the retry loop has no bound";
   const r: ReviewResult = {
     verdict: "FAIL", reason: "1 gating finding",
@@ -610,13 +728,15 @@ test("a suggested_fix bullet list would no longer render as a real <ul> — docu
   };
   const md = renderReport(r, pack);
   const lines = md.split("\n");
-  // One collapsed line, not three — the bullets are inert prose text now,
-  // not a real list (there is no second line for the second bullet to
-  // occupy).
-  expect(lines).toContain(
-    "Two problems: - the lock is released early - the retry loop has no bound",
+  expect(md).toContain(
+    "Two problems:\n\n\\- the lock is released early\n\n\\- the retry loop has no bound",
   );
   expect(lines).not.toContain("- the lock is released early");
+  expect(lines).not.toContain("- the retry loop has no bound");
+  // Not run-on prose either — the round-4 shape is gone.
+  expect(md).not.toContain(
+    "Two problems: - the lock is released early - the retry loop has no bound",
+  );
 });
 
 test("a multi-line reason cannot inject structure into the one-line VERDICT summary", () => {
@@ -669,7 +789,9 @@ test("own probe: an HTML comment cannot open real HTML structure", () => {
   };
   const md = renderReport(r, pack);
   expect(md).not.toContain("<!--");
-  expect(md).toContain("&lt;!-- comment --&gt; hidden?");
+  // Fix round 5: rationale now splits on the line break and rejoins with
+  // a blank line, rather than collapsing to one space-joined line.
+  expect(md).toContain("&lt;!-- comment --&gt;\n\nhidden?");
 });
 
 test("own probe: a model-supplied '</sub>'/'<sub>' cannot touch the report's own footer element", () => {
@@ -707,8 +829,11 @@ test("own probe: a line-initial '[label]:' cannot register a link reference defi
   const md = renderReport(r, pack);
   const lines = md.split("\n");
   expect(lines).not.toContain('[phish]: https://evil.example "click me"');
-  expect(lines).toContain(
-    '\\[phish]: https://evil.example "click me" See [instructions][phish].',
+  // Fix round 5: the definition line and the following sentence are now
+  // two independently-guarded paragraphs (the input already had a blank
+  // line between them, which fix round 5's split-and-rejoin preserves).
+  expect(md).toContain(
+    '\\[phish]: https://evil.example "click me"\n\nSee [instructions][phish].',
   );
 });
 
