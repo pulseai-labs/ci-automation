@@ -28,6 +28,16 @@ test("no findings on a real diff -> PASS", () => {
   expect(v.reason).toBe("no findings");
 });
 
+// Fix 5: the INCONCLUSIVE check (no changed files) must be evaluated before
+// gating, not after — a gating finding must never turn an empty-changed
+// pack into a FAIL. Every prior test that exercises the INCONCLUSIVE branch
+// passes `[]` for findings, so this ordering was otherwise invisible.
+test("INCONCLUSIVE takes precedence over a gating finding on an empty-changed pack", () => {
+  const v = deriveVerdict([f({ severity: "blocker" })], pack(0));
+  expect(v.verdict).toBe("INCONCLUSIVE");
+  expect(v.reason).toBe("no changed Rust files in this diff");
+});
+
 test("a blocker gates -> FAIL", () => {
   const v = deriveVerdict([f({ severity: "blocker" })], pack(3));
   expect(v.verdict).toBe("FAIL");
@@ -39,12 +49,35 @@ test("an adjacent blocker does NOT gate", () => {
 });
 
 test("minor findings do not gate", () => {
-  expect(deriveVerdict([f({ severity: "minor" })], pack(3)).verdict).toBe("PASS");
+  // Fix 4: the non-gating reason string is rendered on every PR whose
+  // findings are all minor/nit — the most frequently displayed of the four
+  // reason strings — so pin it exactly, not just the verdict.
+  const v = deriveVerdict([f({ severity: "minor" })], pack(3));
+  expect(v.verdict).toBe("PASS");
+  expect(v.reason).toBe("1 non-gating finding(s)");
 });
 
 // --- A1: pin both members of DEFAULT_GATE independently ---
 test("a major finding gates -> FAIL", () => {
-  expect(deriveVerdict([f({ severity: "major" })], pack(3)).verdict).toBe("FAIL");
+  // Fix 2: pin the exact reason too. The `worst` label's "major" arm was
+  // previously observed only by `.verdict`, so a mutation that hardcoded
+  // `worst` to `"blocker"` produced a false reason ("...highest severity
+  // blocker" for a finding that is actually major) without failing any test.
+  const v = deriveVerdict([f({ severity: "major" })], pack(3));
+  expect(v.verdict).toBe("FAIL");
+  expect(v.reason).toBe("1 gating finding(s), highest severity major");
+});
+
+// Fix 1 + Fix 3: `gateOn` is a caller-supplied parameter of the mandated
+// signature, not limited to the two default tiers — this pins both that it
+// is actually read (not silently replaced by DEFAULT_GATE) and that the
+// `worst` label is derived from the real gating severity rather than a
+// hardcoded blocker/major ternary that can only ever say "blocker" or
+// "major" regardless of what actually gated.
+test("an explicit non-default gateOn gates on that severity, with an accurate reason", () => {
+  const v = deriveVerdict([f({ severity: "minor" })], pack(3), ["minor"]);
+  expect(v.verdict).toBe("FAIL");
+  expect(v.reason).toBe("1 gating finding(s), highest severity minor");
 });
 
 test("an adjacent major does NOT gate", () => {
@@ -63,7 +96,12 @@ test("a PASS review that DISCUSSES rate limiting is still PASS", () => {
 });
 
 test("a review citing db.rs:429 is not a quota failure", () => {
-  const v = deriveVerdict([f({ severity: "minor", path: "src/db.rs", line: 429 })], pack(3));
+  // Fix 6: cite the location BOTH structurally (path/line) and in prose
+  // (rationale), so this test has teeth against a prose scanner that reads
+  // rendered "path:line" citations AND one that only scans title/rationale
+  // text — not just the former.
+  const v = deriveVerdict([f({ severity: "minor", path: "src/db.rs", line: 429,
+    rationale: "the same pattern appears at db.rs:429" })], pack(3));
   expect(v.verdict).toBe("PASS");
 });
 

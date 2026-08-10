@@ -6,6 +6,12 @@ import type { EvidencePack, Finding, Severity, Verdict } from "../types";
 // off without any type error — see task-7-brief.md Amendment A1.
 const DEFAULT_GATE: Severity[] = ["blocker", "major"];
 
+// Severity, worst first. Used only to label a FAIL's `reason` with the
+// highest severity actually present among the gating findings — `gateOn`
+// (not this list) governs what gates at all, and `gateOn` is a
+// caller-supplied parameter that is not limited to blocker/major.
+const SEVERITY_RANK: Severity[] = ["blocker", "major", "minor", "nit"];
+
 /**
  * Derive the merge verdict from typed `Finding` fields only — never from a
  * regex or substring match over `title`, `rationale`, `failure_scenario`,
@@ -26,7 +32,7 @@ export function deriveVerdict(
   // touched lines `adjacent: true`) never gate, whatever their severity.
   const gating = findings.filter(f => !f.adjacent && gateOn.includes(f.severity));
   if (gating.length > 0) {
-    const worst = gating.some(f => f.severity === "blocker") ? "blocker" : "major";
+    const worst = SEVERITY_RANK.find(s => gating.some(f => f.severity === s))!;
     return { verdict: "FAIL", reason: `${gating.length} gating finding(s), highest severity ${worst}` };
   }
   if (findings.length > 0) {
