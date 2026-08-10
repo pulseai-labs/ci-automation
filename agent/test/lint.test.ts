@@ -139,6 +139,14 @@ test("runClippy guards a spawn-level throw (bad cwd) and degrades instead of thr
   const r = runClippy(BAD_CWD, "main", [], { cargoBin: "true" });
   expect(r.findings).toEqual([]);
   expect(r.degraded.length).toBeGreaterThan(0);
+  // I1: the previous version of this test asserted only `.length > 0`,
+  // which the OTHER degrade branch in runClippy ("clippy skipped: build
+  // failed", lint.ts:40) also satisfies — deleting the `if (p.threw)`
+  // branch entirely (lint.ts:35) left this test green because that later
+  // branch's non-zero-exit check still degrades on a spawn-level throw's
+  // default `exitCode: -1`. Assert the distinguishing string that only the
+  // `p.threw` branch itself produces.
+  expect(r.degraded.join(" ")).toContain("failed to start");
 });
 
 test("runApiDelta guards a spawn-level throw (bad cwd) and degrades instead of throwing", () => {
@@ -198,9 +206,44 @@ exit 0
 
   const correctness = r.findings.find(f => f.title === "correctness-lint");
   expect(correctness?.category).toBe("correctness");
+  // I1: this test previously asserted only `.category` — a mutation
+  // hardcoding `severity: "minor"` regardless of `msg.level` (lint.ts:71)
+  // left the full suite green, because nothing anywhere checked
+  // `.severity` on a clippy finding. verdict.ts's DEFAULT_GATE only gates
+  // on "blocker"/"major", so this mapping is the entire clippy merge gate.
+  expect(correctness?.severity).toBe("major");
 
   const maintainability = r.findings.find(f => f.title === "style-lint");
   expect(maintainability?.category).toBe("maintainability");
+  expect(maintainability?.severity).toBe("minor");
+
+  rmSync(repo, { recursive: true, force: true });
+});
+
+// --- I1: attribute to the PRIMARY span, not merely the first span ---
+
+test("runClippy attributes a diagnostic to its primary span, not merely the first span in the array", () => {
+  const repo = repoWith(TEN_LINES, s => s.replace("fn c() {}", "fn c2() {}")); // changes line 3
+  const cargo = fakeCargo(`
+if [[ "$1" == "clippy" && "$2" == "--version" ]]; then
+  exit 0
+fi
+cat <<'JSON'
+{"reason":"compiler-message","message":{"level":"warning","code":{"code":"clippy::x"},"message":"primary-not-first","spans":[{"is_primary":false,"file_name":"src/other.rs","line_start":9,"line_end":9},{"is_primary":true,"file_name":"src/db.rs","line_start":3,"line_end":3}],"children":[]}}
+JSON
+exit 0
+`);
+
+  const r = runClippy(repo, "base", [{ path: "src/db.rs", added: 1, removed: 1 }], { cargoBin: cargo });
+  // `spans.find(s => s.is_primary) ?? spans[0]` (lint.ts:52) mutated to
+  // `spans[0]` picks the non-primary "src/other.rs" span instead — which
+  // is not in `changedFilePaths` (only "src/db.rs" was passed as changed),
+  // so the finding is dropped entirely under the mutation. Correct
+  // behavior keeps it, attributed to the primary span's file and line.
+  const finding = r.findings.find(f => f.title === "primary-not-first");
+  expect(finding).toBeDefined();
+  expect(finding?.path).toBe("src/db.rs");
+  expect(finding?.line).toBe(3);
 
   rmSync(repo, { recursive: true, force: true });
 });
