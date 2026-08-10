@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Parser, Language, type Node } from "web-tree-sitter";
-import type { ChangedFile, SymbolInfo } from "../types";
+import type { ChangedFile, ContainerInfo, SymbolInfo } from "../types";
 import { changedLines, rangeTouched, type ChangedLines } from "./hunks";
 
 /**
@@ -67,19 +67,20 @@ function headerText(src: string, node: Node): string {
  * enclosing impl/trait/mod container (containers can nest, e.g. `mod tests`
  * inside an `impl`; the nearest one wins). Function items with no qualifying
  * ancestor (free functions, closures) are not collected — this mirrors the
- * original scope: siblings are a within-container concept.
+ * original scope: peer signatures are a within-container concept.
  *
  * Important-finding fix: a `fn` nested inside another `fn`'s body (a local
  * helper) is NOT a peer of the methods around it and must never appear in
- * their `siblings`. Design choice (of the two defensible options — attribute
- * it to its host function as container, or drop it entirely): we exclude it
- * from the symbol list entirely. Rationale: `siblings` exists to surface
- * *signature* absences across peer methods for a reviewer LLM ("added to
- * `open` but not `open_with_embedder`"); a local helper has no peers by
- * construction (nothing else in the file can call it), so a container built
- * just for it would always yield an empty/pointless sibling set. Excluding
- * it is also the pre-existing stated intent above ("fns nested in fns are
- * not collected") — the walker just failed to enforce it because only
+ * its container's signature list. Design choice (of the two defensible
+ * options — attribute it to its host function as container, or drop it
+ * entirely): we exclude it from the symbol list entirely. Rationale: the
+ * container's signature list exists to surface *signature* absences across
+ * peer methods for a reviewer LLM ("added to `open` but not
+ * `open_with_embedder`"); a local helper has no peers by construction
+ * (nothing else in the file can call it), so a container built just for it
+ * would always yield an empty/pointless peer set. Excluding it is also the
+ * pre-existing stated intent above ("fns nested in fns are not collected")
+ * — the walker just failed to enforce it because only
  * container nodes pushed a stack frame. `insideFn` tracks that gate: once
  * true, no further function is collected until a nested container (a local
  * `impl`/`mod`/`trait`, however unusual) opens a fresh peer-grouping scope,
@@ -134,12 +135,23 @@ function isTouched(item: Item, changed: ChangedLines): boolean {
   return rangeTouched(item.startRow, item.endRow, changed);
 }
 
-export async function extractSymbols(repo: string, base: string, files: ChangedFile[]): Promise<SymbolInfo[]> {
+export interface SymbolExtraction {
+  symbols: SymbolInfo[];
+  containers: ContainerInfo[];
+}
+
+export async function extractSymbols(repo: string, base: string, files: ChangedFile[]): Promise<SymbolExtraction> {
   const language = await loadLanguage();
   const parser = new Parser();
   parser.setLanguage(language);
 
-  const out: SymbolInfo[] = [];
+  const symbols: SymbolInfo[] = [];
+  const containers: ContainerInfo[] = [];
+  // `${path}::${container label}` -> whether that container's signature list
+  // has already been emitted into `containers` (once per container, however
+  // many of its items were touched).
+  const seenContainers = new Set<string>();
+
   for (const f of files) {
     let src: string;
     try {
@@ -151,23 +163,25 @@ export async function extractSymbols(repo: string, base: string, files: ChangedF
     const tree = parser.parse(src);
     if (!tree) continue;
 
-    const containers: ContainerNode[] = [];
-    collect(tree.rootNode, src, [], containers, false);
+    const fileContainers: ContainerNode[] = [];
+    collect(tree.rootNode, src, [], fileContainers, false);
 
     const changed = changedLines(repo, base, f.path);
 
-    for (const c of containers) {
-      for (const item of c.items) {
-        if (!isTouched(item, changed)) continue;
-        out.push({
-          path: f.path,
-          name: item.name,
-          kind: item.kind,
-          container: c.label,
-          siblings: c.items.filter(s => s !== item).map(s => s.signature),
-        });
+    for (const c of fileContainers) {
+      const touched = c.items.filter(item => isTouched(item, changed));
+      if (touched.length === 0) continue;
+
+      for (const item of touched) {
+        symbols.push({ path: f.path, name: item.name, kind: item.kind, container: c.label });
+      }
+
+      const key = `${f.path}::${c.label}`;
+      if (!seenContainers.has(key)) {
+        seenContainers.add(key);
+        containers.push({ path: f.path, container: c.label, signatures: c.items.map(i => i.signature) });
       }
     }
   }
-  return out;
+  return { symbols, containers };
 }

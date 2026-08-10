@@ -26,7 +26,7 @@ const DEFAULT_DEADLINE_MS = 20 * 60 * 1000;
  *  the failure recorded only in result.json. */
 function shellPack(): EvidencePack {
   return {
-    head: "", diff: "", changed: [], symbols: [], clippy: [],
+    head: "", diff: "", changed: [], symbols: [], containers: [], clippy: [],
     budget: { bytes: 0, capped: [] }, degraded: [],
   };
 }

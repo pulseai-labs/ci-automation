@@ -86,7 +86,7 @@ test("surfaces truncation and degradation in the footer", () => {
   // `pack.degraded` never receives it — so a renderer reading the wrong
   // source would silently delete that signal from the report.
   const footerPack: EvidencePack = {
-    head: "abc", diff: "", changed: [], symbols: [], clippy: [],
+    head: "abc", diff: "", changed: [], symbols: [], containers: [], clippy: [],
     budget: { bytes: 10, capped: ["pack-only-capped"] },
     degraded: ["pack-only-degraded"],
   };
@@ -1016,7 +1016,7 @@ test("finalize() carries clippy and semver findings through to result.findings, 
 
   const finPack: EvidencePack = {
     head: "abc", diff: "", changed: [{ path: "src/a.rs", added: 1, removed: 0 }],
-    symbols: [], clippy: [clippyFinding], semver: [semverFinding],
+    symbols: [], containers: [], clippy: [clippyFinding], semver: [semverFinding],
     budget: { bytes: 10, capped: [] }, degraded: [],
   };
 
@@ -1032,7 +1032,7 @@ test("finalize() surfaces dropped findings via the footer's degraded list, witho
 
   const finPack: EvidencePack = {
     head: "abc", diff: "", changed: [{ path: "src/a.rs", added: 1, removed: 0 }],
-    symbols: [], clippy: [], budget: { bytes: 10, capped: [] },
+    symbols: [], containers: [], clippy: [], budget: { bytes: 10, capped: [] },
     degraded: ["existing note"],
   };
 
@@ -1102,7 +1102,7 @@ test("finalize() groups dropped findings by distinct code — insertion order, n
 
   const finPack: EvidencePack = {
     head: "abc", diff: "", changed: [{ path: "src/a.rs", added: 1, removed: 0 }],
-    symbols: [], clippy: [clippyFinding], budget: { bytes: 10, capped: [] }, degraded: [],
+    symbols: [], containers: [], clippy: [clippyFinding], budget: { bytes: 10, capped: [] }, degraded: [],
   };
 
   const duplicate1: Finding = { ...base, title: "dup1" };
@@ -1134,7 +1134,7 @@ test("finalize() bounds the footer to one clause per drop cause, regardless of h
 
   const finPack: EvidencePack = {
     head: "abc", diff: "", changed: [{ path: "src/a.rs", added: 1, removed: 0 }],
-    symbols: [], clippy: [], budget: { bytes: 10, capped: [] }, degraded: [],
+    symbols: [], containers: [], clippy: [], budget: { bytes: 10, capped: [] }, degraded: [],
   };
 
   const mk = (path: string): Finding => ({
@@ -1165,7 +1165,7 @@ test("finalize()'s dropped-finding line reaches the rendered footer", () => {
 
   const finPack: EvidencePack = {
     head: "abc", diff: "", changed: [{ path: "src/a.rs", added: 1, removed: 0 }],
-    symbols: [], clippy: [], budget: { bytes: 10, capped: [] }, degraded: [],
+    symbols: [], containers: [], clippy: [], budget: { bytes: 10, capped: [] }, degraded: [],
   };
   const resolvable: Finding = {
     severity: "major", category: "correctness", path: "src/a.rs", line: 1,

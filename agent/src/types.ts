@@ -26,8 +26,26 @@ export interface SymbolInfo {
   name: string;
   kind: string;
   container: string;
-  /** SIGNATURES ONLY of sibling items in the same container */
-  siblings: string[];
+}
+
+/**
+ * A container's (impl/trait/mod) full signature list, stored ONCE and
+ * referenced by every `SymbolInfo` inside it via `(path, container)` — not
+ * copied onto each symbol. This replaces the old `SymbolInfo.siblings`,
+ * which duplicated the list once per symbol and made the section
+ * O(symbols × container size).
+ *
+ * Deliberate semantic change from the old `siblings`: that field excluded
+ * the symbol itself (`c.items.filter(s => s !== item)`). `signatures`
+ * includes every item in the container, the changed one included — that is
+ * the only way to store the list once. It is also better context: a reader
+ * sees the whole container and can identify the changed item by name.
+ */
+export interface ContainerInfo {
+  path: string;
+  container: string;
+  /** SIGNATURES ONLY of every item in this container, in source order */
+  signatures: string[];
 }
 
 export interface EvidencePack {
@@ -35,6 +53,7 @@ export interface EvidencePack {
   diff: string;
   changed: ChangedFile[];
   symbols: SymbolInfo[];
+  containers: ContainerInfo[];
   clippy: Finding[];
   apiDelta?: string;
   semver?: Finding[];

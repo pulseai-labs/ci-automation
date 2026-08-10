@@ -45,7 +45,7 @@ const pack: EvidencePack = {
   head: "0".repeat(40),
   diff: REAL_DIFF,
   changed: [{ path: "src/a.rs", added: 1, removed: 1 }],
-  symbols: [], clippy: [], budget: { bytes: 0, capped: [] }, degraded: [],
+  symbols: [], containers: [], clippy: [], budget: { bytes: 0, capped: [] }, degraded: [],
 };
 
 const tmpRepos = [repo];
@@ -322,7 +322,7 @@ const countlessPack: EvidencePack = {
   head: "0".repeat(40),
   diff: COUNTLESS_DIFF,
   changed: [{ path: "src/b.rs", added: 1, removed: 1 }],
-  symbols: [], clippy: [], budget: { bytes: 0, capped: [] }, degraded: [],
+  symbols: [], containers: [], clippy: [], budget: { bytes: 0, capped: [] }, degraded: [],
 };
 
 test("registers a count-less hunk header's line as touched", () => {
@@ -376,7 +376,7 @@ const decoyPack: EvidencePack = {
   head: "0".repeat(40),
   diff: DECOY_DIFF,
   changed: [{ path: "src/a.rs", added: 2, removed: 2 }],
-  symbols: [], clippy: [], budget: { bytes: 0, capped: [] }, degraded: [],
+  symbols: [], containers: [], clippy: [], budget: { bytes: 0, capped: [] }, degraded: [],
 };
 
 test("attributes the hunk following a +++-shaped decoy line to the real file", () => {
