@@ -17,6 +17,8 @@ export interface GatherOpts {
   diffCap?: number;
   /** skip cargo-dependent sections; used by fast tests */
   skipCargo?: boolean;
+  /** override the cargo binary passed to clippy/api-delta/semver-checks; for hermetic tests */
+  cargoBin?: string;
 }
 
 /**
@@ -67,15 +69,33 @@ export async function gather(o: GatherOpts): Promise<EvidencePack> {
   let semver: EvidencePack["semver"];
 
   if (!o.skipCargo) {
-    const c = runClippy(o.repo, o.base, changed);
+    const toolOpts = o.cargoBin ? { cargoBin: o.cargoBin } : {};
+    const c = runClippy(o.repo, o.base, changed, toolOpts);
     clippy = c.findings; degraded.push(...c.degraded);
-    const a = runApiDelta(o.repo, o.base);
+    const clippyBytes = Buffer.byteLength(JSON.stringify(clippy), "utf8");
+    if (clippyBytes > CAPS.clippy) {
+      // deterministic trim: keep whole findings in path/line/title order until the
+      // cap, mirroring the symbol trim above (same shape, same localeCompare
+      // pattern for string fields so the two adjacent trims stay consistent).
+      clippy = [...clippy].sort((a, b) =>
+        a.path.localeCompare(b.path) || (a.line - b.line) || a.title.localeCompare(b.title));
+      const kept: typeof clippy = [];
+      let used = 0;
+      for (const f of clippy) {
+        const size = Buffer.byteLength(JSON.stringify(f), "utf8");
+        if (used + size > CAPS.clippy) break;
+        kept.push(f); used += size;
+      }
+      clippy = kept;
+      capped.push("clippy");
+    }
+    const a = runApiDelta(o.repo, o.base, toolOpts);
     if (a.apiDelta) {
       const t = cap(a.apiDelta, CAPS.apiDelta);
       apiDelta = t.text; if (t.capped) capped.push("apiDelta");
     }
     degraded.push(...a.degraded);
-    const s = runSemverChecks(o.repo);
+    const s = runSemverChecks(o.repo, toolOpts);
     semver = s.semver; degraded.push(...s.degraded);
   } else {
     degraded.push("cargo sections skipped by caller");
