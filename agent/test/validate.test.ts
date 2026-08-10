@@ -3,6 +3,7 @@ import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { validate } from "../src/stage3/validate";
+import { deriveVerdict } from "../src/stage3/verdict";
 import type { Finding, EvidencePack } from "../src/types";
 
 function f(over: Partial<Finding> = {}): Finding {
@@ -17,6 +18,9 @@ function f(over: Partial<Finding> = {}): Finding {
 const repo = mkdtempSync(join(tmpdir(), "val-"));
 mkdirSync(join(repo, "src"));
 writeFileSync(join(repo, "src/a.rs"), "one\ntwo\nthree\n");
+// C1: cargoTools.ts pins every semver finding to "Cargo.toml:1" — a real
+// file must exist at that path for validate()'s filesystem checks.
+writeFileSync(join(repo, "Cargo.toml"), "[package]\nname = \"x\"\n");
 
 // Real `git diff -U5 base...HEAD -- '*.rs'` output (the exact command
 // agent/src/stage1/diff.ts:48 runs) for: 3-line file src/a.rs, line 2
@@ -48,6 +52,31 @@ const tmpRepos = [repo];
 
 afterAll(() => {
   for (const dir of tmpRepos) rmSync(dir, { recursive: true, force: true });
+});
+
+// --- schema drift: an off-enum severity/category must not fail open ---
+
+// An off-enum severity falls straight through deriveVerdict's
+// `gateOn.includes(f.severity)` to `false` — a gate that fails OPEN rather
+// than closed on schema drift. validate() is the only chokepoint every
+// finding passes through regardless of origin, so it is the right place to
+// catch this.
+test("drops a finding with an off-enum severity", () => {
+  const bad = f({ severity: "critical" as Finding["severity"] });
+  const r = validate([bad], pack, repo);
+  expect(r.kept).toEqual([]);
+  expect(r.dropped).toEqual([
+    { finding: bad, why: "invalid severity: critical", code: "invalid-severity" },
+  ]);
+});
+
+test("drops a finding with an off-enum category", () => {
+  const bad = f({ category: "style" as Finding["category"] });
+  const r = validate([bad], pack, repo);
+  expect(r.kept).toEqual([]);
+  expect(r.dropped).toEqual([
+    { finding: bad, why: "invalid category: style", code: "invalid-category" },
+  ]);
 });
 
 test("drops a finding citing a nonexistent file", () => {
@@ -111,6 +140,71 @@ test("keeps an out-of-diff finding but marks it adjacent", () => {
   const r = validate([f({ line: 3 })], pack, repo);
   expect(r.dropped).toEqual([]);
   expect(r.kept).toEqual([{ ...f({ line: 3 }), adjacent: true }]);
+});
+
+// --- C1: stage 3 must not re-decide adjacency for a deterministic finding ---
+
+// diff.ts:48 scopes `git diff` to `-- '*.rs'` — Cargo.toml can NEVER be a
+// key in `touched`, so a validate() that re-decides adjacency for every
+// finding (not just agent ones) marks every semver finding `adjacent: true`
+// unconditionally, permanently defeating verdict.ts's api-contract gate.
+test("C1: a semver finding on Cargo.toml is never re-decided as adjacent by the diff's touched-line map", () => {
+  const semverFinding = f({
+    source: "semver", severity: "major", category: "api-contract",
+    path: "Cargo.toml", line: 1, title: "cargo semver-checks reported a breaking change",
+  });
+  const r = validate([semverFinding], pack, repo);
+  expect(r.dropped).toEqual([]);
+  expect(r.kept).toEqual([{ ...semverFinding, adjacent: false }]);
+});
+
+// In REAL_DIFF, src/a.rs line 1 is -U5 CONTEXT, not a changed line (only
+// line 2 is). lint.ts deliberately keeps a clippy diagnostic whose SPAN
+// overlaps a changed row even when `span.line_start` itself lands on a
+// context line, and reports `line: span.line_start` — a validate() that
+// re-decides adjacency for clippy findings undoes that correct upstream
+// decision and downgrades the finding to non-gating.
+test("C1: a clippy finding whose reported line is diff context (not itself a changed line) is never marked adjacent", () => {
+  const clippyFinding = f({
+    source: "clippy", severity: "major", category: "correctness",
+    path: "src/a.rs", line: 1,
+  });
+  const r = validate([clippyFinding], pack, repo);
+  expect(r.dropped).toEqual([]);
+  expect(r.kept).toEqual([{ ...clippyFinding, adjacent: false }]);
+});
+
+// Both findings above must not merely come back `adjacent: false` from
+// validate() in isolation — they must actually gate the merge once fed
+// through deriveVerdict(), which is the whole point of C1.
+test("C1: both the semver and clippy findings above gate the merge (FAIL)", () => {
+  const semverFinding = f({
+    source: "semver", severity: "major", category: "api-contract",
+    path: "Cargo.toml", line: 1,
+  });
+  const clippyFinding = f({
+    source: "clippy", severity: "major", category: "correctness",
+    path: "src/a.rs", line: 1,
+  });
+  const { kept, dropped } = validate([semverFinding, clippyFinding], pack, repo);
+  expect(dropped).toEqual([]);
+  const v = deriveVerdict(kept, pack);
+  expect(v.verdict).toBe("FAIL");
+  expect(v.reason).toBe("2 gating finding(s), highest severity major");
+});
+
+// --- C1: normalize the lookup key before checking diff adjacency ---
+
+// A model emitting an equivalent but differently-spelled path (here,
+// "./src/a.rs" for a diff whose canonical spelling is "src/a.rs") must not
+// silently miss `touched` (keyed by the diff's own spelling) and come back
+// `adjacent: true` — the same silent gate downgrade C1 fixes for
+// source-based mismatches. The kept finding's stored `path` is the
+// normalized, repo-relative POSIX spelling too, not the raw model input.
+test("C1: normalizes an equivalent but differently-spelled path before checking diff adjacency", () => {
+  const r = validate([f({ path: "./src/a.rs", line: 2 })], pack, repo);
+  expect(r.dropped).toEqual([]);
+  expect(r.kept).toEqual([{ ...f({ path: "./src/a.rs", line: 2 }), path: "src/a.rs", adjacent: false }]);
 });
 
 test("dedupes an agent finding against an identical clippy finding", () => {

@@ -1,6 +1,6 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
-import { resolve, sep } from "node:path";
-import type { EvidencePack, Finding } from "../types";
+import { relative, resolve, sep } from "node:path";
+import type { Category, EvidencePack, Finding, Severity } from "../types";
 
 /**
  * Line numbers touched by the diff, per file — new-side ("+") lines only.
@@ -25,6 +25,21 @@ import type { EvidencePack, Finding } from "../types";
  * A diff can be cut off mid-hunk by stage 1's byte cap (see `cap()` in
  * agent/src/stage1/diff.ts). This walk never assumes a hunk is complete —
  * an early end of input just stops counting, it never throws.
+ *
+ * Deletion-only hunk semantic (deliberate, with a gating consequence):
+ * ONLY '+' lines call `.add(newLine)` — a ' ' context line advances
+ * `newLine` but is never marked touched. A hunk that only removes lines
+ * (no '+' lines of its own) therefore marks nothing touched for that hunk,
+ * even though the surrounding context lines the diff prints around it DO
+ * exist in `touched`'s keyspace via other hunks. Consequence: an
+ * agent-authored finding that cites a line adjacent to a pure deletion
+ * (e.g. "the line after the one you deleted now needs updating") can never
+ * be `adjacent: false` on that basis alone — it always reads as
+ * pre-existing and never gates purely from a deletion. This is intentional
+ * (the new-side line-number space has no line that corresponds to "the
+ * thing that was deleted"), not an oversight; a finding about the
+ * deletion's effect must cite a '+' line or an actually-changed line to
+ * gate.
  */
 function diffLines(diff: string): Map<string, Set<number>> {
   const map = new Map<string, Set<number>>();
@@ -95,12 +110,19 @@ const key = (f: Finding) => `${f.path}:${f.line}:${f.category}`;
  * can bound the summary's size regardless of what the model returns.
  */
 export type DropCode =
+  | "invalid-severity"
+  | "invalid-category"
   | "path-escapes-repo"
   | "path-missing"
   | "not-a-regular-file"
   | "line-out-of-range"
   | "duplicate-of-deterministic"
   | "duplicate";
+
+const VALID_SEVERITIES: ReadonlySet<Severity> = new Set(["blocker", "major", "minor", "nit"]);
+const VALID_CATEGORIES: ReadonlySet<Category> = new Set([
+  "correctness", "security", "data-loss", "api-contract", "maintainability",
+]);
 
 /** Number of real lines in `content` (a trailing newline is not a phantom extra line; an empty file is 0 lines). */
 function countLines(content: string): number {
@@ -123,11 +145,40 @@ export function validate(
   const seen = new Set<string>();
 
   for (const f of findings) {
+    // Schema drift guard: nothing upstream of validate() checks enum
+    // membership, and an off-enum severity falls straight through
+    // deriveVerdict's `gateOn.includes(f.severity)` to `false` — i.e. a
+    // gate that fails OPEN (silently PASSes) rather than closed when a
+    // finding's severity or category doesn't match the typed union.
+    // validate() is the one chokepoint every finding passes through
+    // regardless of origin (agent, clippy, semver), so it is the right
+    // place to catch this rather than trusting the model (or a future
+    // deterministic source) to only ever emit the four/five known values.
+    if (!VALID_SEVERITIES.has(f.severity)) {
+      dropped.push({ finding: f, why: `invalid severity: ${f.severity}`, code: "invalid-severity" });
+      continue;
+    }
+    if (!VALID_CATEGORIES.has(f.category)) {
+      dropped.push({ finding: f, why: `invalid category: ${f.category}`, code: "invalid-category" });
+      continue;
+    }
     const abs = resolve(repo, f.path);
     if (abs !== repoRoot && !abs.startsWith(repoRoot + sep)) {
       dropped.push({ finding: f, why: `path escapes repo: ${f.path}`, code: "path-escapes-repo" });
       continue;
     }
+    // Normalize once to a repo-relative POSIX path and reuse it for every
+    // downstream check — the diff-adjacency lookup below AND the path
+    // stored on the kept finding. `touched` (from diffLines()) is keyed by
+    // the diff's own canonical spelling (e.g. "src/a.rs"); a model emitting
+    // an equivalent but differently-spelled path (e.g. "./src/a.rs")
+    // resolves to the same file for the filesystem checks below via
+    // `resolve()`, but as a RAW STRING it would never equal a `touched` key
+    // — silently missing the map and coming back `adjacent: true`, the same
+    // silent gate downgrade this file's other fix (only re-deciding
+    // adjacency for `source === "agent"`) closes for source-based
+    // mismatches.
+    const relPath = relative(repoRoot, abs).split(sep).join("/");
     if (!existsSync(abs)) {
       dropped.push({ finding: f, why: `path does not exist at head: ${f.path}`, code: "path-missing" });
       continue;
@@ -153,7 +204,24 @@ export function validate(
       continue;
     }
     seen.add(key(f));
-    kept.push({ ...f, adjacent: !(touched.get(f.path)?.has(f.line) ?? false) });
+    // C1: only a MODEL-AUTHORED finding's adjacency is re-decided here.
+    // `clippy` and `semver` findings are deterministic tool output that
+    // stage 1 already scoped correctly — clippy via `rangeTouched` (line-
+    // level overlap against the real diff, agent/src/stage1/lint.ts), and
+    // semver findings are repo-level by construction (they pin
+    // "Cargo.toml:1", a file diff.ts's *.rs-only `git diff` invocation can
+    // never touch, so `touched` can never contain it as a key). Re-running
+    // this file's own, text-parsed, byte-capped `touched` map over them can
+    // only ever LOSE information stage 1 already had right: it would mark
+    // every semver finding `adjacent: true` (Cargo.toml is never a
+    // `touched` key), permanently defeating the api-contract gate, and it
+    // would downgrade a clippy span whose `line` (line_start) lands on a
+    // context row even though the span, correctly, overlaps a changed one.
+    kept.push({
+      ...f,
+      path: relPath,
+      adjacent: f.source === "agent" ? !(touched.get(relPath)?.has(f.line) ?? false) : false,
+    });
   }
   return { kept, dropped };
 }

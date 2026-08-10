@@ -23,6 +23,8 @@ export { renderReport } from "./render";
  * grouping apart from an accidental alphabetical sort.
  */
 const DROP_CAUSE: Record<DropCode, string> = {
+  "invalid-severity": "severity was not a recognized value",
+  "invalid-category": "category was not a recognized value",
   "path-escapes-repo": "path escaped the repository",
   "path-missing": "path did not exist at head",
   "not-a-regular-file": "path was not a regular file",
