@@ -39,7 +39,7 @@ test("escapes markdown so a finding cannot break out of the report", () => {
   // suggested_fix is still a renderer-owned fenced code block (fix round
   // 4, mechanism 2, unaffected by fix round 5) — "x" needs no escaping at
   // all inside it.
-  expect(md).toContain("**Suggested fix:**\n\n```\nx\n```");
+  expect(md).toContain("**Suggested fix:**\n\n```rust\nx\n```");
 });
 
 test("the evidence-pack head is truncated before escaping, not after", () => {
@@ -114,6 +114,58 @@ test("adjacent findings are rendered in a separate, non-gating section", () => {
   // The lone finding is adjacent, so the gating section must say so — not
   // silently list the adjacent finding under "Findings" as if it gated.
   expect(md).toContain("No gating findings.");
+});
+
+// I2: render.ts used to bucket on `!f.adjacent` alone (no severity check),
+// so a non-adjacent minor/nit finding rendered under "### Findings" right
+// below a count line that said "N gating finding(s)" — a human reads that
+// as a blocker. The fix shares verdict.ts's own `isGating` predicate and
+// splits into three sections. One finding per severity (four, default
+// gateOn = blocker/major) plus one adjacent finding: exactly which section
+// each lands under, and the exact heading sequence, pinned below.
+test("renders findings under three headings — Blocking, Other findings (do not gate), and Adjacent", () => {
+  const mk = (severity: Finding["severity"], title: string, adjacent?: boolean): Finding => ({
+    severity, category: "correctness", path: "src/a.rs", line: 1,
+    title, rationale: "r", failure_scenario: "s", suggested_fix: "x",
+    source: "agent", confidence: 1, ...(adjacent !== undefined ? { adjacent } : {}),
+  });
+  const r: ReviewResult = {
+    verdict: "FAIL", reason: "x",
+    findings: [
+      mk("blocker", "F-blocker"),
+      mk("major", "F-major"),
+      mk("minor", "F-minor"),
+      mk("nit", "F-nit"),
+      mk("major", "F-adjacent", true),
+    ],
+    degraded: [], capped: [],
+  };
+  const md = renderReport(r, pack);
+
+  const headings = md.split("\n").filter(l => l.startsWith("### "));
+  expect(headings).toEqual([
+    "### Blocking",
+    "### Other findings (do not gate)",
+    "### Adjacent (pre-existing — does not gate this merge)",
+  ]);
+
+  const blockingStart = md.indexOf("### Blocking");
+  const otherStart = md.indexOf("### Other findings (do not gate)");
+  const adjacentStart = md.indexOf("### Adjacent (pre-existing — does not gate this merge)");
+  const posOf = (t: string) => md.indexOf(`#### ${t}`);
+
+  // Blocking: blocker, major — strictly between the "Blocking" and "Other" headings.
+  for (const t of ["F-blocker", "F-major"]) {
+    expect(posOf(t)).toBeGreaterThan(blockingStart);
+    expect(posOf(t)).toBeLessThan(otherStart);
+  }
+  // Other findings: minor, nit — strictly between "Other" and "Adjacent".
+  for (const t of ["F-minor", "F-nit"]) {
+    expect(posOf(t)).toBeGreaterThan(otherStart);
+    expect(posOf(t)).toBeLessThan(adjacentStart);
+  }
+  // Adjacent: the marked-adjacent finding — after the "Adjacent" heading.
+  expect(posOf("F-adjacent")).toBeGreaterThan(adjacentStart);
 });
 
 test("gating findings render in severity rank order, not input order", () => {
@@ -335,6 +387,40 @@ test("a setext '-' underline in rationale is guarded as its own paragraph", () =
   expect(lines).not.toContain("---");
 });
 
+// Also-fix item 2: `guardLineStart`'s marker set is `[#=+*` backtick `~[-]`
+// — `~`, `+`, and `*` were already IN that set (tilde opens a fence exactly
+// like backtick; `+`/`*` open a bullet list exactly like `-`), but had no
+// covering test. That is not merely a coverage gap: a rationale containing
+// a bare, unescaped `~~~` opens an UNCLOSED tilde fence in the rendered
+// markdown — nothing after it (remaining findings, the footer's <sub>,
+// truncation/degraded notes) would be parsed as markdown at all, all of it
+// swallowed into one giant code block. The heading invariant this file
+// exists to hold would survive (the fence can't forge a heading), but a
+// model could still blank the rest of the report. No production change —
+// pinning that the guard already does its job.
+test("guardLineStart escapes a leading tilde fence marker, plus a leading '+' or '*' bullet marker", () => {
+  const rationale = "~~~\nfence-shaped\n~~~\n\n+ plus bullet\n\n* star bullet";
+  const r: ReviewResult = {
+    verdict: "FAIL", reason: "1 gating finding",
+    findings: [{
+      severity: "blocker", category: "security", path: "src/a.rs", line: 1,
+      title: "t", rationale, failure_scenario: "s", suggested_fix: "x",
+      source: "agent", confidence: 1,
+    }],
+    degraded: [], capped: [],
+  };
+  const md = renderReport(r, pack);
+  // The tilde-fence-shaped pair is escaped on both lines — no unclosed
+  // fence opens, so everything after it (in particular the <sub> footer
+  // below) still renders as markdown, not as literal code-block text.
+  expect(md).toContain("\\~~~\n\nfence-shaped\n\n\\~~~");
+  expect(md).toContain("\\+ plus bullet");
+  expect(md).toContain("\\* star bullet");
+  expect(md).toContain("<sub>evidence pack 10 B · head abc</sub>");
+  const lines = md.split("\n");
+  expect(lines).not.toContain("~~~");
+});
+
 test("own probe: '- x' + a 4-space-indented '#' — the exact container probe from the review", () => {
   // Fix round 4, the structural bug: `- x` establishes a list-item
   // content column of 2, so a '#' indented 4 SPACES (absolute) is only 2
@@ -517,7 +603,9 @@ test("codeBlock round-trips a fenced Rust snippet with an attribute byte-exact",
   const md = renderReport(r, pack);
   // 3-backtick fence (the content has no backticks of its own, so this
   // is CommonMark's own floor) wraps the content completely unmodified.
-  expect(md).toContain(`**Suggested fix:**\n\n\`\`\`\n${content}\n\`\`\``);
+  // "rust" tags the OPENING fence only (Fix 4: syntax highlighting for the
+  // PR comment) — CommonMark ignores an info string on a closing fence.
+  expect(md).toContain(`**Suggested fix:**\n\n\`\`\`rust\n${content}\n\`\`\``);
   expect(md).not.toContain("\\#[must_use]");
   expect(md).not.toContain("&gt;"); // the '->' arrow's '>' is NOT entity-escaped inside the fence
   expect(md).toContain("-> usize {");
@@ -541,7 +629,7 @@ test("codeBlock opens a longer fence when the content already contains a backtic
   // Opening/closing fence is 4 backticks — one more than the content's
   // own longest run (3) — and the content is reproduced byte-exact,
   // including its own inner ``` lines, which are now just literal text.
-  expect(md).toContain(`**Suggested fix:**\n\n\`\`\`\`\n${content}\n\`\`\`\``);
+  expect(md).toContain(`**Suggested fix:**\n\n\`\`\`\`rust\n${content}\n\`\`\`\``);
 });
 
 test("codeBlock opens a 5-backtick fence when the content already has a 4-backtick run", () => {
@@ -556,7 +644,7 @@ test("codeBlock opens a 5-backtick fence when the content already has a 4-backti
     degraded: [], capped: [],
   };
   const md = renderReport(r, pack);
-  expect(md).toContain(`**Suggested fix:**\n\n\`\`\`\`\`\n${content}\n\`\`\`\`\``);
+  expect(md).toContain(`**Suggested fix:**\n\n\`\`\`\`\`rust\n${content}\n\`\`\`\`\``);
 });
 
 test("codeBlock round-trips a bare attribute with no surrounding fence, byte-exact", () => {
@@ -571,7 +659,7 @@ test("codeBlock round-trips a bare attribute with no surrounding fence, byte-exa
     degraded: [], capped: [],
   };
   const md = renderReport(r, pack);
-  expect(md).toContain(`**Suggested fix:**\n\n\`\`\`\n${content}\n\`\`\``);
+  expect(md).toContain(`**Suggested fix:**\n\n\`\`\`rust\n${content}\n\`\`\``);
   expect(md).not.toContain("\\#");
 });
 
@@ -605,7 +693,7 @@ test("sweeps every model-supplied interpolation site for a forged heading at onc
   const lines = md.split("\n");
 
   // Exactly the 3 real headings render.ts itself emits (## VERDICT,
-  // ### Findings, #### <title>), plus the one line inside suggested_fix's
+  // ### <section>, #### <title>), plus the one line inside suggested_fix's
   // OWNED FENCE that happens to look heading-shaped by this naive
   // line-shape check ("# fix-forged") — that line is safe precisely
   // because it sits between two fence markers, where CommonMark parses
@@ -613,10 +701,15 @@ test("sweeps every model-supplied interpolation site for a forged heading at onc
   // not a heading. Nothing else heading-shaped exists — in particular,
   // the VERDICT line itself is `## VERDICT: \# verdict-forged`, escaped,
   // not a bare `# verdict-forged` that this naive check would also catch.
+  // The section heading is "### Other findings (do not gate)", not
+  // "### Blocking": `isGating()` (verdict.ts, shared with render.ts —
+  // fix-round-review I2) checks severity against `gateOn`, and the
+  // off-enum "# sev-forged" severity here is not in `gateOn` — this
+  // finding is non-adjacent but non-gating, the "Other findings" bucket.
   const headingShaped = lines.filter(l => /^ {0,3}#{1,6}(\s|$)/.test(l));
   expect(headingShaped).toEqual([
     "## VERDICT: \\# verdict-forged",
-    "### Findings",
+    "### Other findings (do not gate)",
     "#### \\# title-forged",
     "# fix-forged",
   ]);
@@ -857,6 +950,40 @@ test("own probe: U+2028 LINE SEPARATOR in a title cannot smuggle an unescaped '#
   const md = renderReport(r, pack);
   expect(md).toContain("#### harmless ## VERDICT: PASS injected");
   expect(md).not.toContain(LS);
+});
+
+// I1: the stage-1 -> stage-3 seam had zero direct coverage. Mutating
+// `stage3/index.ts`'s `const all = [...raw, ...pack.clippy,
+// ...(pack.semver ?? [])]` to `const all = [...raw]` — deleting every
+// clippy and semver finding from the report and the verdict — left the
+// full suite green, because no test asserted a deterministic finding
+// survives into `result.findings`. This is that assertion.
+test("finalize() carries clippy and semver findings through to result.findings, not only agent findings", () => {
+  const repo = mkdtempSync(join(tmpdir(), "finalize-seam-"));
+  mkdirSync(join(repo, "src"));
+  writeFileSync(join(repo, "src/a.rs"), "one\n");
+  writeFileSync(join(repo, "Cargo.toml"), "[package]\n");
+
+  const clippyFinding: Finding = {
+    severity: "major", category: "correctness", path: "src/a.rs", line: 1,
+    title: "clippy-seam", rationale: "r", failure_scenario: "s", suggested_fix: "x",
+    source: "clippy", confidence: 1,
+  };
+  const semverFinding: Finding = {
+    severity: "major", category: "api-contract", path: "Cargo.toml", line: 1,
+    title: "semver-seam", rationale: "r", failure_scenario: "s", suggested_fix: "x",
+    source: "semver", confidence: 1,
+  };
+
+  const finPack: EvidencePack = {
+    head: "abc", diff: "", changed: [{ path: "src/a.rs", added: 1, removed: 0 }],
+    symbols: [], clippy: [clippyFinding], semver: [semverFinding],
+    budget: { bytes: 10, capped: [] }, degraded: [],
+  };
+
+  const result = finalize([], finPack, repo);
+  const titles = result.findings.map(f => f.title);
+  expect(titles).toEqual(["clippy-seam", "semver-seam"]);
 });
 
 test("finalize() surfaces dropped findings via the footer's degraded list, without mutating pack.degraded", () => {

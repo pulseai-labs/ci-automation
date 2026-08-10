@@ -1,5 +1,5 @@
 import type { EvidencePack, Finding, ReviewResult } from "../types";
-import { SEVERITY_RANK } from "./verdict";
+import { isGating, SEVERITY_RANK } from "./verdict";
 
 /**
  * SECURITY INVARIANT this file exists to hold:
@@ -277,7 +277,12 @@ function codeBlock(s: string): string {
   const content = String(s).replace(/\r\n?/g, "\n");
   const longestBacktickRun = Math.max(0, ...(content.match(/`+/g) ?? []).map(run => run.length));
   const fence = "`".repeat(Math.max(3, longestBacktickRun + 1));
-  return `${fence}\n${content}\n${fence}`;
+  // `suggested_fix` is always Rust (this pipeline reviews Rust diffs only —
+  // see stage1/diff.ts's `*.rs` scoping) — tag the opening fence with the
+  // language so the rendered PR comment syntax-highlights it. The info
+  // string is only meaningful on the OPENING fence; CommonMark ignores one
+  // on a closing fence, so `fence` alone (no tag) still closes correctly.
+  return `${fence}rust\n${content}\n${fence}`;
 }
 
 function row(f: Finding): string {
@@ -319,7 +324,16 @@ function bySeverity(a: Finding, b: Finding): number {
  * comment's structure. See task-8-brief.md.
  */
 export function renderReport(r: ReviewResult, pack: EvidencePack): string {
-  const gating = r.findings.filter(f => !f.adjacent);
+  // Three-way split using verdict.ts's OWN gating predicate (`isGating`) —
+  // not a second, render-local notion of "gating" (fix-round-review I2: the
+  // previous split was `!f.adjacent` alone, no severity check, so a
+  // non-adjacent minor/nit finding rendered under a heading whose count
+  // line above it said "N gating finding(s)" — a human reads that as a
+  // blocker. `other` is deliberately the complement of both `blocking` and
+  // `adjacent` (not, say, "everything not blocking"), so every finding
+  // lands in exactly one of the three sections.
+  const blocking = r.findings.filter(f => isGating(f));
+  const other = r.findings.filter(f => !f.adjacent && !isGating(f));
   const adjacent = r.findings.filter(f => f.adjacent);
 
   const out: string[] = [];
@@ -330,11 +344,16 @@ export function renderReport(r: ReviewResult, pack: EvidencePack): string {
   // interpolation-site list.
   out.push(`## VERDICT: ${escLine(r.verdict)}`, ``, escLine(r.reason), ``);
 
-  if (gating.length) {
-    out.push(`### Findings`, ``);
-    for (const f of [...gating].sort(bySeverity)) out.push(row(f));
+  if (blocking.length) {
+    out.push(`### Blocking`, ``);
+    for (const f of [...blocking].sort(bySeverity)) out.push(row(f));
   } else {
     out.push(`No gating findings.`, ``);
+  }
+
+  if (other.length) {
+    out.push(`### Other findings (do not gate)`, ``);
+    for (const f of [...other].sort(bySeverity)) out.push(row(f));
   }
 
   if (adjacent.length) {
