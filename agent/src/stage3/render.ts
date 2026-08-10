@@ -2,28 +2,44 @@ import type { EvidencePack, Finding, ReviewResult } from "../types";
 import { SEVERITY_RANK } from "./verdict";
 
 /**
- * Neutralize markdown control sequences using CommonMark's own lossless
- * backslash-escape mechanism wherever one exists, so escaped output still
- * reads — and, once rendered, copy-pastes — as the original text. `<`/`>`
- * become HTML entities (`&lt;`/`&gt;`; a renderer turns these back into the
- * literal character, so this is lossless too). Every other guard below
- * inserts a backslash before the first character of a BLOCK-level marker
- * at a line's start — backtick-fence, tilde-fence, ATX heading (`#`),
- * setext heading underline (a line of solely `=` or `-` — CommonMark's
- * *second* heading syntax; a paragraph followed by such a line becomes an
- * `<h1>`/`<h2>` even though it never contains `#`), and link reference
- * definition (`[label]: url`, which silently vanishes from the rendered
- * text while registering a link target any later `[text][label]` in the
- * same document would resolve to). Each of those requires that exact RAW
- * character to begin the line; a leading backslash breaks the match
- * without deleting or visibly altering the text once rendered — CommonMark
- * backslash-escapes every ASCII punctuation character, including all of
- * these. Preserves internal newlines — rationale, failure_scenario, and
- * suggested_fix legitimately span multiple lines (e.g. quoting a
- * multi-line snippet). Model output is data, not markdown.
+ * SECURITY INVARIANT this function exists to hold:
+ *
+ *   No model-supplied string can produce a heading or an HTML block in
+ *   the rendered report.
+ *
+ * That is the whole property. `<`/`>` are escaped to HTML entities below,
+ * which rules out HTML blocks/tags entirely. The remaining route to a
+ * forged heading is CommonMark's two heading syntaxes — ATX (`# text`)
+ * and setext (a paragraph immediately followed by a line of solely `=` or
+ * `-`) — plus link reference definitions (`[label]: url`), which don't
+ * forge a heading but do silently vanish from rendered output while
+ * registering a link target for a later `[text][label]` anywhere in the
+ * same document (a different finding's field, rendered into the same
+ * comment). All three open only from the START of a line, tolerating up
+ * to 3 spaces of CommonMark-legal indentation first — so every guard below
+ * is anchored there, not at column 0, and preserves whatever indentation
+ * it matched rather than deleting it.
+ *
+ * Deliberately NOT guarded: thematic breaks, bullet/ordered lists,
+ * blockquotes, indented code blocks — everything else CommonMark can also
+ * start at a line's beginning. None of them can forge a heading or open
+ * an HTML block, so none of them can let injected content control the
+ * report's structure — guarding them anyway would only cost content
+ * fidelity for no security gain (a review model's bulleted reasoning is
+ * common; see Fix round 3, Fix 2, where matching a bare leading `-` broke
+ * every `<ul>` a model wrote into run-on prose). If a future reviewer
+ * finds `* star item` rendering as a real bullet list, or a blockquote
+ * rendering as a real blockquote, that is this decision working as
+ * intended — read this comment before treating it as a miss.
  */
 function esc(s: string): string {
   return String(s)
+    // Trim BEFORE any guard runs, not after (fix round 3, Fix 1): a guard
+    // that requires column 0 can miss a construct hidden behind leading
+    // indentation, and a trailing .trim() would then strip exactly that
+    // indentation and re-expose the construct at column 0 — trimming
+    // first removes that gap instead of creating it.
+    .trim()
     // CommonMark's own preprocessing step normalizes \r, \r\n, and a bare
     // \r all to \n before block parsing ever runs — normalize here too, so
     // every `gm`-anchored guard below sees exactly the line boundaries a
@@ -31,12 +47,36 @@ function esc(s: string): string {
     // `^`/`$` line-terminator handling to agree with CommonMark's.
     .replace(/\r\n?/g, "\n")
     .replace(/[<>]/g, c => (c === "<" ? "&lt;" : "&gt;"))
-    .replace(/```/g, "\\```")
-    .replace(/~~~/g, "\\~~~")
-    .replace(/^#/gm, "\\#")
-    .replace(/^(=+|-+)/gm, m => "\\" + m[0] + m.slice(1))
-    .replace(/^\[/gm, "\\[")
-    .trim();
+    // A backtick/tilde run only opens a fence when it is the first thing
+    // on a line (mod up to 3 spaces indent) — a fence-length run midline
+    // is inert prose and is deliberately left untouched. NOTE this escape
+    // is NOT perfectly lossless, unlike `<`/`>` above: `` \``` `` leaves
+    // two raw backticks, which can pair with a later 2-backtick run
+    // elsewhere in the document and open an unwanted code span; `\~~~`
+    // similarly leaves `~~`, GFM's strikethrough delimiter. The SECURITY
+    // property still holds either way (the line no longer opens a fence),
+    // but do not claim — here or in a test comment — that this round-trips
+    // to byte-identical rendered output. It does not.
+    .replace(/^( {0,3})```/gm, "$1\\```")
+    .replace(/^( {0,3})~~~/gm, "$1\\~~~")
+    .replace(/^( {0,3})#/gm, "$1\\#")
+    // Setext heading underline: a line consisting SOLELY of `=` or `-`
+    // characters (optionally indented, optionally trailing whitespace)
+    // immediately under a paragraph becomes an <h1>/<h2> with no '#'
+    // anywhere. Must require the WHOLE line: an earlier version of this
+    // guard matched any line-initial run of `-`, which also matched every
+    // ordinary bullet list's leading `-` and mangled real `<ul>`s into
+    // run-on prose (fix round 3, Fix 2). This full-line form cannot tell
+    // a `-`-only line acting as a setext underline (in scope: forges a
+    // heading) apart from the identical line acting as a thematic break
+    // (explicitly out of scope, see the doc comment above) — that would
+    // need tracking whether the previous line was blank, which a
+    // stateless per-field regex does not do — so a lone thematic break
+    // also gets the backslash it doesn't strictly need. That is
+    // acceptable overshoot: nothing about the line itself distinguishes
+    // the two roles, and defaulting to "still safe" is correct here.
+    .replace(/^( {0,3})([=-]+)([ \t]*)$/gm, (_, indent, run, trail) => `${indent}\\${run}${trail}`)
+    .replace(/^( {0,3})\[/gm, "$1\\[");
 }
 
 /**
@@ -79,14 +119,22 @@ function escLine(s: string): string {
  * Escape a value embedded inside a single-backtick code span
  * (`` `path:line` ``, in `row()` below) — a literal backtick in the value
  * would otherwise close the span early and let the remainder of the line
- * render as raw, unescaped markdown. Backslash-escapes do not apply
- * inside a code span (CommonMark: everything between the delimiters is
- * literal), so unlike `esc()`'s fence guards this cannot use `` \` ``; a
- * lookalike character is the only option here, and a bare `path` has no
- * legitimate reason to contain a real backtick.
+ * render as raw, unescaped markdown. That is the ONLY thing that matters
+ * inside a single-backtick span: CommonMark treats a code span's content
+ * verbatim — backslash-escapes are not processed and HTML entities are
+ * not translated there, and a literal `<` cannot open a tag from inside
+ * one either (code-span recognition has priority over every other inline
+ * construct). Running `esc()`'s block-level guards on code-span content
+ * (through fix round 2) cost fidelity for no security benefit: a path
+ * containing `<` rendered as the literal text `&lt;` instead of `<`, and
+ * one starting with `-` rendered as the literal text `\-` instead of `-`.
+ * Fix round 3, Minor. Backslash-escapes do not apply inside a code span,
+ * so unlike `esc()`'s fence guards this cannot use `` \` ``; a lookalike
+ * character is the only option here, and a bare `path` has no legitimate
+ * reason to contain a real backtick.
  */
 function escCode(s: string): string {
-  return escLine(s).replace(/`/g, "ʼ");
+  return String(s).replace(LINE_BREAK_RE, " ").replace(/`/g, "ʼ").trim();
 }
 
 function row(f: Finding): string {
