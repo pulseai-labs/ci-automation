@@ -67,7 +67,13 @@ test("fixture: gather stays inside its declared budget and reports the real head
     const p = await gather({ repo, base: "base", skipCargo: true });
     const total = CAPS.diff + CAPS.siblings + CAPS.clippy + CAPS.apiDelta;
     expect(p.budget.bytes).toBeLessThanOrEqual(total);
-    expect(p.budget.bytes).toBe(Buffer.byteLength(JSON.stringify(p), "utf8"));
+    // budget.bytes is measured over the pack while budget.bytes is still 0,
+    // so it is the size of the pack with a `"bytes":0` placeholder — NOT the
+    // size of the final serialized pack. Assert exactly that, so the property
+    // is pinned rather than approximated.
+    const measured = Buffer.byteLength(
+      JSON.stringify({ ...p, budget: { ...p.budget, bytes: 0 } }), "utf8");
+    expect(p.budget.bytes).toBe(measured);
     const realHead = Bun.spawnSync(["git", "rev-parse", "HEAD"], { cwd: repo })
       .stdout.toString().trim();
     expect(p.head).toBe(realHead);
