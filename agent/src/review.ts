@@ -1,4 +1,4 @@
-import { writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { EvidencePack, Finding, ReviewResult, Usage } from "./types";
 import { gather } from "./stage1";
@@ -43,6 +43,11 @@ function shellPack(): EvidencePack {
  * completed (successfully or by falling into the catch block).
  */
 export async function runReview(o: ReviewOpts): Promise<ReviewResult> {
+  // Fix round 1, Fix 3: the function that owns the fail-closed contract must
+  // not depend on an unwritten caller having created outDir first — without
+  // this, a nonexistent outDir makes initResult() itself throw ENOENT and no
+  // terminal state is written anywhere, a hole at line one of the guarantee.
+  mkdirSync(o.outDir, { recursive: true });
   initResult(o.outDir);
 
   let pack: EvidencePack | undefined;

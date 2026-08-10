@@ -109,6 +109,118 @@ test("result.json already holds a terminal verdict before stage 2 runs", async (
   rmSync(out, { recursive: true, force: true });
 });
 
+// Fix round 1, Fix 1: the fail-closed contract is "before ANY other work",
+// not merely "before stage 2" — the test above only observes the seam stage
+// 2 happens to provide. `gather()` itself is the long, kill-prone phase (git
+// spawns, tree-sitter WASM init, cargo clippy), which is exactly the window
+// the seed exists to cover, and no test in the file observed it: moving
+// `initResult(o.outDir)` to run after `await gather(...)` left the entire
+// suite green, because a `gather()` throw is still caught and `writeResult`
+// still runs once at the very end regardless.
+//
+// This test needs no timing race and no hook into runReview. JS's run-to-
+// first-await semantics guarantee it: `runReview` executes synchronously,
+// including everything before its first `await`, before the call expression
+// `runReview(...)` ever returns a promise to its caller. In the correct
+// code `initResult()` is the first statement, unconditional and synchronous,
+// strictly before `await gather(...)` — so by the time this test's own
+// `runReview(...)` call finishes evaluating (before this test ever awaits
+// it), `initResult()` has already run and result.json is already seeded on
+// disk, deterministically, not probabilistically. A repo that doesn't exist
+// makes `gather()` throw on its very first line (`git rev-parse HEAD`) —
+// still after any `await gather(...)` would have to suspend runReview to
+// propagate that failure, so the peek below is still strictly before the
+// run's own terminal `writeResult()` call. Verified empirically both ways
+// (see task-9-report.md, Fix round 1) before writing this test.
+test("initResult seeds a terminal ERROR before gather() runs, synchronously — not just before stage 2", async () => {
+  const out = mkdtempSync(join(tmpdir(), "out-"));
+  const neverCalled = async (): Promise<{ findings: Finding[] }> => {
+    throw new Error("stage 2 must not run when gather() itself fails");
+  };
+
+  // Deliberately not awaited yet — the peek below must happen synchronously,
+  // in the same tick as this call, before any microtask from inside
+  // runReview or gather() gets a chance to run.
+  const pending = runReview({
+    repo: "/nonexistent-path-xyz-123", base: "base", outDir: out,
+    skipCargo: true, reason: neverCalled,
+  });
+
+  const peek = readResult(out);
+  expect(peek.verdict).toBe("ERROR");
+  expect(peek.reason).toBe("orchestrator did not complete");
+
+  await pending;
+  rmSync(out, { recursive: true, force: true });
+});
+
+// Fix round 1, Fix 3: `runReview` owns the fail-closed contract, so it must
+// not depend on an unwritten caller having created outDir first. Before this
+// fix, a nonexistent outDir made `initResult()` itself throw ENOENT and no
+// terminal state was written anywhere — a hole at line one of the guarantee.
+test("a nonexistent outDir is created so the run still reaches a terminal state on disk", async () => {
+  const repo = fixtureRepo();
+  const parent = mkdtempSync(join(tmpdir(), "outparent-"));
+  const out = join(parent, "nested", "outdir"); // does not exist yet
+  const stub = async (): Promise<{ findings: Finding[] }> => ({ findings: [] });
+
+  const r = await runReview({ repo, base: "base", outDir: out, skipCargo: true, reason: stub });
+  expect(r.verdict).toBe("PASS");
+  expect(existsSync(out)).toBe(true);
+  expect(readResult(out).verdict).toBe("PASS");
+  expect(existsSync(join(out, "report.md"))).toBe(true);
+
+  rmSync(repo, { recursive: true, force: true });
+  rmSync(parent, { recursive: true, force: true });
+});
+
+// Fix round 1, Fix 2: amendment A2 (clear the deadline timer) had no test at
+// all — removing the `finally`/`clearTimeout` left the whole suite green,
+// because `bun test` force-exits and a leaked 20-minute timer is invisible
+// to the runner. A leaked timer only shows up as the real-world symptom it
+// causes: the OS process does not exit on its own. That is only observable
+// from a real subprocess, driven end to end — an in-process assertion on
+// `runReview`'s return value cannot see it, because the timer lives in the
+// event loop, not in the returned value. The driver script is generated into
+// its own temp dir per run, not committed as a fixture.
+test("the deadline timer is cleared: a successful review lets the process exit promptly, not just runReview() resolve", async () => {
+  const repo = fixtureRepo();
+  const out = mkdtempSync(join(tmpdir(), "out-"));
+  const driverDir = mkdtempSync(join(tmpdir(), "driver-"));
+  const driverPath = join(driverDir, "driver.ts");
+  const reviewPath = join(import.meta.dirname, "..", "src", "review.ts");
+
+  writeFileSync(driverPath, `
+import { runReview } from ${JSON.stringify(reviewPath)};
+await runReview({
+  repo: ${JSON.stringify(repo)},
+  base: "base",
+  outDir: ${JSON.stringify(out)},
+  skipCargo: true,
+  deadlineMs: 10_000,
+  reason: async () => ({ findings: [] }),
+});
+`);
+
+  const start = performance.now();
+  const proc = Bun.spawn(["bun", driverPath], { stdout: "ignore", stderr: "pipe" });
+  await proc.exited;
+  const elapsedMs = performance.now() - start;
+
+  expect(proc.exitCode).toBe(0);
+  // A leaked 10s deadline timer would keep the process alive until it fires
+  // (the reviewer measured this directly: `real 0.25s` cleared vs.
+  // `real 30.25s` leaked, with deadlineMs: 30_000). A generous margin well
+  // under the 10s deadline, but far above ordinary process/Bun-startup
+  // overhead, distinguishes "exited on its own" from "exited because the
+  // timer finally fired".
+  expect(elapsedMs).toBeLessThan(5_000);
+
+  rmSync(repo, { recursive: true, force: true });
+  rmSync(out, { recursive: true, force: true });
+  rmSync(driverDir, { recursive: true, force: true });
+}, 15_000);
+
 // Amendment A3: report.md must always be written, even when gather() itself
 // throws and `pack` is never assigned — otherwise a human sees a red status
 // with no explanation anywhere.
@@ -125,8 +237,20 @@ test("a nonexistent repo still yields a terminal ERROR and a rendered report", a
 
   expect(r.verdict).toBe("ERROR");
   expect(readResult(out).verdict).toBe("ERROR");
+  // Fix round 1, Fix 4: every assertion above is satisfied identically
+  // whether gather()'s own ENOENT or neverCalled's own error produced the
+  // ERROR — this is the distinguishing check. If stage 2 ever ran despite
+  // gather() failing first, `r.reason` would be neverCalled's message
+  // instead of gather()'s.
+  expect(r.reason).not.toContain("stage 2 must not run");
   expect(existsSync(join(out, "report.md"))).toBe(true);
-  expect(readFileSync(join(out, "report.md"), "utf8")).toContain("VERDICT: ERROR");
+  const report = readFileSync(join(out, "report.md"), "utf8");
+  expect(report).toContain("VERDICT: ERROR");
+  // Fix round 1, Fix 4: A3's actual purpose is that the *reason* reaches the
+  // report, not merely that the verdict does — a report saying only
+  // "VERDICT: ERROR" with no explanation is exactly the failure A3 exists to
+  // prevent. Assert the reason text itself appears in the report body.
+  expect(report).toContain(r.reason);
 
   rmSync(out, { recursive: true, force: true });
 });
