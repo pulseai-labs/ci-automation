@@ -6,11 +6,13 @@ import type { EvidencePack, Finding, Severity, Verdict } from "../types";
 // off without any type error — see task-7-brief.md Amendment A1.
 const DEFAULT_GATE: Severity[] = ["blocker", "major"];
 
-// Severity, worst first. Used only to label a FAIL's `reason` with the
-// highest severity actually present among the gating findings — `gateOn`
-// (not this list) governs what gates at all, and `gateOn` is a
-// caller-supplied parameter that is not limited to blocker/major.
-const SEVERITY_RANK: Severity[] = ["blocker", "major", "minor", "nit"];
+// Severity, worst first. Used to label a FAIL's `reason` with the highest
+// severity actually present among the gating findings — `gateOn` (not this
+// list) governs what gates at all, and `gateOn` is a caller-supplied
+// parameter that is not limited to blocker/major. Exported so stage3/render.ts
+// can sort findings by rank instead of relying on the alphabet putting
+// "blocker" < "major" < "minor" < "nit" by coincidence.
+export const SEVERITY_RANK: Severity[] = ["blocker", "major", "minor", "nit"];
 
 /**
  * Derive the merge verdict from typed `Finding` fields only — never from a
