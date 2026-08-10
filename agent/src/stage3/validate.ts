@@ -83,6 +83,25 @@ function diffLines(diff: string): Map<string, Set<number>> {
 
 const key = (f: Finding) => `${f.path}:${f.line}:${f.category}`;
 
+/**
+ * Stable, model-independent identifier for why a finding was dropped — one
+ * per drop site below. `why` (kept alongside `code` on each dropped entry)
+ * stays free text for logs/debugging, but four of the six `why` strings
+ * interpolate `f.path` (and `line-out-of-range` also interpolates `f.line`
+ * and the file's line count), so `why` is itself partly model-controlled —
+ * a model can make it arbitrarily long or numerous just by inventing more
+ * distinct paths. `code` never varies with the finding's content, so a
+ * caller that needs to summarize drops (stage3/index.ts's `finalize()`)
+ * can bound the summary's size regardless of what the model returns.
+ */
+export type DropCode =
+  | "path-escapes-repo"
+  | "path-missing"
+  | "not-a-regular-file"
+  | "line-out-of-range"
+  | "duplicate-of-deterministic"
+  | "duplicate";
+
 /** Number of real lines in `content` (a trailing newline is not a phantom extra line; an empty file is 0 lines). */
 function countLines(content: string): number {
   if (content === "") return 0;
@@ -94,43 +113,43 @@ export function validate(
   findings: Finding[],
   pack: EvidencePack,
   repo: string,
-): { kept: Finding[]; dropped: { finding: Finding; why: string }[] } {
+): { kept: Finding[]; dropped: { finding: Finding; why: string; code: DropCode }[] } {
   const touched = diffLines(pack.diff);
   const deterministicKeys = new Set([...pack.clippy, ...(pack.semver ?? [])].map(key));
   const repoRoot = resolve(repo);
 
   const kept: Finding[] = [];
-  const dropped: { finding: Finding; why: string }[] = [];
+  const dropped: { finding: Finding; why: string; code: DropCode }[] = [];
   const seen = new Set<string>();
 
   for (const f of findings) {
     const abs = resolve(repo, f.path);
     if (abs !== repoRoot && !abs.startsWith(repoRoot + sep)) {
-      dropped.push({ finding: f, why: `path escapes repo: ${f.path}` });
+      dropped.push({ finding: f, why: `path escapes repo: ${f.path}`, code: "path-escapes-repo" });
       continue;
     }
     if (!existsSync(abs)) {
-      dropped.push({ finding: f, why: `path does not exist at head: ${f.path}` });
+      dropped.push({ finding: f, why: `path does not exist at head: ${f.path}`, code: "path-missing" });
       continue;
     }
     if (!statSync(abs).isFile()) {
-      dropped.push({ finding: f, why: `path is not a regular file: ${f.path}` });
+      dropped.push({ finding: f, why: `path is not a regular file: ${f.path}`, code: "not-a-regular-file" });
       continue;
     }
     const lines = countLines(readFileSync(abs, "utf8"));
     if (f.line < 1 || f.line > lines) {
-      dropped.push({ finding: f, why: `line ${f.line} outside ${f.path} (${lines} lines)` });
+      dropped.push({ finding: f, why: `line ${f.line} outside ${f.path} (${lines} lines)`, code: "line-out-of-range" });
       continue;
     }
     // Only a model-authored finding can be a duplicate OF a deterministic one.
     // Applying this to clippy/semver findings themselves would drop every one of
     // them, since deterministicKeys is built from exactly those findings.
     if (f.source === "agent" && deterministicKeys.has(key(f))) {
-      dropped.push({ finding: f, why: "duplicate of a deterministic finding" });
+      dropped.push({ finding: f, why: "duplicate of a deterministic finding", code: "duplicate-of-deterministic" });
       continue;
     }
     if (seen.has(key(f))) {
-      dropped.push({ finding: f, why: "duplicate finding" });
+      dropped.push({ finding: f, why: "duplicate finding", code: "duplicate" });
       continue;
     }
     seen.add(key(f));

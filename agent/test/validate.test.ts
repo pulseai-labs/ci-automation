@@ -54,7 +54,7 @@ test("drops a finding citing a nonexistent file", () => {
   const r = validate([f({ path: "src/ghost.rs" })], pack, repo);
   expect(r.kept).toEqual([]);
   expect(r.dropped).toEqual([
-    { finding: f({ path: "src/ghost.rs" }), why: "path does not exist at head: src/ghost.rs" },
+    { finding: f({ path: "src/ghost.rs" }), why: "path does not exist at head: src/ghost.rs", code: "path-missing" },
   ]);
 });
 
@@ -62,7 +62,7 @@ test("drops a finding citing a line past end of file", () => {
   const r = validate([f({ line: 99999 })], pack, repo);
   expect(r.kept).toEqual([]);
   expect(r.dropped).toEqual([
-    { finding: f({ line: 99999 }), why: "line 99999 outside src/a.rs (3 lines)" },
+    { finding: f({ line: 99999 }), why: "line 99999 outside src/a.rs (3 lines)", code: "line-out-of-range" },
   ]);
 });
 
@@ -72,7 +72,7 @@ test("drops a finding one line past the last valid line", () => {
   const r = validate([f({ line: 4 })], pack, repo);
   expect(r.kept).toEqual([]);
   expect(r.dropped).toEqual([
-    { finding: f({ line: 4 }), why: "line 4 outside src/a.rs (3 lines)" },
+    { finding: f({ line: 4 }), why: "line 4 outside src/a.rs (3 lines)", code: "line-out-of-range" },
   ]);
 });
 
@@ -80,7 +80,7 @@ test("drops a finding at line 0", () => {
   const r = validate([f({ line: 0 })], pack, repo);
   expect(r.kept).toEqual([]);
   expect(r.dropped).toEqual([
-    { finding: f({ line: 0 }), why: "line 0 outside src/a.rs (3 lines)" },
+    { finding: f({ line: 0 }), why: "line 0 outside src/a.rs (3 lines)", code: "line-out-of-range" },
   ]);
 });
 
@@ -88,7 +88,7 @@ test("drops a finding at a negative line", () => {
   const r = validate([f({ line: -1 })], pack, repo);
   expect(r.kept).toEqual([]);
   expect(r.dropped).toEqual([
-    { finding: f({ line: -1 }), why: "line -1 outside src/a.rs (3 lines)" },
+    { finding: f({ line: -1 }), why: "line -1 outside src/a.rs (3 lines)", code: "line-out-of-range" },
   ]);
 });
 
@@ -118,7 +118,7 @@ test("dedupes an agent finding against an identical clippy finding", () => {
   const r = validate([f({ source: "agent" })], withClippy, repo);
   expect(r.kept).toEqual([]);
   expect(r.dropped).toEqual([
-    { finding: f({ source: "agent" }), why: "duplicate of a deterministic finding" },
+    { finding: f({ source: "agent" }), why: "duplicate of a deterministic finding", code: "duplicate-of-deterministic" },
   ]);
 });
 
@@ -140,7 +140,7 @@ test("dedupes two identical agent findings with no deterministic match", () => {
   const second = f({ line: 2 });
   const r = validate([first, second], pack, repo);
   expect(r.kept).toEqual([{ ...first, adjacent: false }]);
-  expect(r.dropped).toEqual([{ finding: second, why: "duplicate finding" }]);
+  expect(r.dropped).toEqual([{ finding: second, why: "duplicate finding", code: "duplicate" }]);
 });
 
 // Fix 4: a model-supplied path must not escape the repo root.
@@ -149,7 +149,7 @@ test("drops a finding whose path escapes the repo", () => {
   const r = validate([f({ path: escapee })], pack, repo);
   expect(r.kept).toEqual([]);
   expect(r.dropped).toEqual([
-    { finding: f({ path: escapee }), why: `path escapes repo: ${escapee}` },
+    { finding: f({ path: escapee }), why: `path escapes repo: ${escapee}`, code: "path-escapes-repo" },
   ]);
 });
 
@@ -160,7 +160,7 @@ test("drops a finding whose path is a directory, not a regular file", () => {
   const r = validate([f({ path: "src" })], pack, repo);
   expect(r.kept).toEqual([]);
   expect(r.dropped).toEqual([
-    { finding: f({ path: "src" }), why: "path is not a regular file: src" },
+    { finding: f({ path: "src" }), why: "path is not a regular file: src", code: "not-a-regular-file" },
   ]);
 });
 
