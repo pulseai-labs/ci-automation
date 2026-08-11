@@ -158,6 +158,16 @@ export async function extractSymbols(repo: string, base: string, files: ChangedF
   // blocks anyway (fix round 1, review finding 1).
   const containerByKey = new Map<string, ContainerInfo>();
 
+  // Fix round 2, review finding 1: the loop below used to skip any block
+  // with zero touched items on its own, so a same-labelled block with
+  // nothing touched never merged in — invisible to the reviewer, even when
+  // a sibling block sharing its key WAS touched. That untouched peer is
+  // exactly the case this feature exists to surface (an unamended
+  // `open_with_embedder` next to a changed `open`), so per (path, label)
+  // key: if ANY block under that key has a touched item, every block
+  // sharing the key contributes its signatures, touched or not. A key with
+  // no touched block anywhere still never emits a container at all.
+
   for (const f of files) {
     let src: string;
     try {
@@ -174,15 +184,30 @@ export async function extractSymbols(repo: string, base: string, files: ChangedF
 
     const changed = changedLines(repo, base, f.path);
 
+    // Pass 1: which (path, label) keys have at least one touched item in
+    // ANY of their blocks — decided across all blocks sharing the key
+    // before any block is skipped, so an untouched block is never judged in
+    // isolation.
+    const touchedKeys = new Set<string>();
     for (const c of fileContainers) {
-      const touched = c.items.filter(item => isTouched(item, changed));
-      if (touched.length === 0) continue;
+      if (c.items.some(item => isTouched(item, changed))) {
+        touchedKeys.add(`${f.path}::${c.label}`);
+      }
+    }
 
+    // Pass 2: emit. A block only contributes (symbols and signatures) if its
+    // key is in `touchedKeys`; source order across fileContainers is
+    // preserved in the merge, matching the same-block-order guarantee S1
+    // established for the both-touched case.
+    for (const c of fileContainers) {
+      const key = `${f.path}::${c.label}`;
+      if (!touchedKeys.has(key)) continue;
+
+      const touched = c.items.filter(item => isTouched(item, changed));
       for (const item of touched) {
         symbols.push({ path: f.path, name: item.name, kind: item.kind, container: c.label });
       }
 
-      const key = `${f.path}::${c.label}`;
       const existing = containerByKey.get(key);
       if (existing) {
         existing.signatures.push(...c.items.map(i => i.signature));

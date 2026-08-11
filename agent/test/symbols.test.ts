@@ -393,3 +393,168 @@ test("two same-labelled impl blocks in one file are merged into a single contain
   ]);
   rmSync(repo, { recursive: true, force: true });
 });
+
+// --- Fix round 2 (review of S1's merge fix) --------------------------------
+//
+// Round 1 fixed the case where BOTH same-labelled blocks have a touched
+// item. It missed the case where only ONE does: `collect`'s caller skips any
+// block whose own `touched` list is empty (`if (touched.length === 0)
+// continue`), so a same-labelled block with nothing touched never made it
+// into `containerByKey` — even when its sibling block, sharing the same
+// key, WAS touched. That untouched peer is precisely the absence this
+// feature exists to surface (the PulseDB motivating defect: `open` changed,
+// `open_with_embedder` did not, and the reviewer needs to see both to
+// notice). Fixed by deciding "does this key have any touched block" across
+// ALL of a key's blocks before emitting any of them.
+
+function repoWithFiles(files: Record<string, string>) {
+  const repo = mkdtempSync(join(tmpdir(), "sym-"));
+  const sh = (c: string) => Bun.spawnSync(["bash", "-lc", c], { cwd: repo });
+  sh("git init -q . && git config user.email t@t && git config user.name t");
+  mkdirSync(join(repo, "src"));
+  for (const [path, content] of Object.entries(files)) {
+    writeFileSync(join(repo, path), content);
+  }
+  sh("git add -A && git commit -qm base && git branch base");
+  return { repo, sh };
+}
+
+// The reviewer's exact repro: two same-labelled impl blocks, only the FIRST
+// touched. Exhaustive `toEqual` on the whole signature array (not
+// `toContain`) — the point is that `open_with_embedder`'s signature is
+// present even though its block was never itself touched.
+const SPLIT_IMPL_ONLY_FIRST_TOUCHED_SRC = `
+impl PulseDB {
+    pub fn open(path: &Path) -> Result<Self> { Ok(Self {}) }
+}
+
+impl PulseDB {
+    pub fn open_with_embedder(path: &Path, e: Arc<dyn Embedder>) -> Result<Self> { Ok(Self {}) }
+}
+`;
+
+test("only the first of two same-labelled impl blocks is touched — the untouched peer's signature still merges in", async () => {
+  const { repo, sh } = repoWith(SPLIT_IMPL_ONLY_FIRST_TOUCHED_SRC);
+  writeFileSync(
+    join(repo, "src/db.rs"),
+    SPLIT_IMPL_ONLY_FIRST_TOUCHED_SRC.replace("pub fn open(path: &Path)", "pub fn open(path: &Path) /* touched */"),
+  );
+  sh("git add -A && git commit -qm change");
+
+  const { symbols, containers } = await extractSymbols(repo, "base", [{ path: "src/db.rs", added: 1, removed: 1 }]);
+
+  // only `open` was touched -> it is the only symbol
+  expect(symbols.map(s => s.name)).toEqual(["open"]);
+  expect(symbols[0]!.container).toBe("impl PulseDB");
+
+  // still ONE merged container, and it carries BOTH blocks' signatures in
+  // source order, even though the second block has nothing touched
+  expect(containers.length).toBe(1);
+  const container = containerFor(containers, symbols[0]!)!;
+  expect(container.signatures).toEqual([
+    "pub fn open(path: &Path) /* touched */ -> Result<Self>",
+    "pub fn open_with_embedder(path: &Path, e: Arc<dyn Embedder>) -> Result<Self>",
+  ]);
+  rmSync(repo, { recursive: true, force: true });
+});
+
+// Three same-labelled blocks, only the MIDDLE one touched — pins source
+// order exactly (untouched-then-touched-then-untouched), which the naive
+// "gather a touched block's siblings" framing could get wrong if the merge
+// didn't walk blocks in their original document order.
+const THREE_BLOCK_MIX_SRC = `
+impl PulseDB {
+    pub fn open(path: &Path) -> Result<Self> { Ok(Self {}) }
+}
+
+impl PulseDB {
+    pub fn middle(path: &Path) -> Result<Self> { Ok(Self {}) }
+}
+
+impl PulseDB {
+    pub fn open_with_embedder(path: &Path, e: Arc<dyn Embedder>) -> Result<Self> { Ok(Self {}) }
+}
+`;
+
+test("three same-labelled impl blocks, only the middle one touched — all three merge in exact source order", async () => {
+  const { repo, sh } = repoWith(THREE_BLOCK_MIX_SRC);
+  writeFileSync(
+    join(repo, "src/db.rs"),
+    THREE_BLOCK_MIX_SRC.replace("pub fn middle(path: &Path)", "pub fn middle(path: &Path) /* touched */"),
+  );
+  sh("git add -A && git commit -qm change");
+
+  const { symbols, containers } = await extractSymbols(repo, "base", [{ path: "src/db.rs", added: 1, removed: 1 }]);
+
+  expect(symbols.map(s => s.name)).toEqual(["middle"]);
+  expect(containers.length).toBe(1);
+  const container = containerFor(containers, symbols[0]!)!;
+  expect(container.signatures).toEqual([
+    "pub fn open(path: &Path) -> Result<Self>",
+    "pub fn middle(path: &Path) /* touched */ -> Result<Self>",
+    "pub fn open_with_embedder(path: &Path, e: Arc<dyn Embedder>) -> Result<Self>",
+  ]);
+  rmSync(repo, { recursive: true, force: true });
+});
+
+// Negative 1: a same-labelled block living in a DIFFERENT file must never
+// merge with it, even when both files' blocks are independently touched.
+// The dedup key must keep carrying `path`.
+const CROSS_FILE_SRC = `
+impl PulseDB {
+    pub fn open(path: &Path) -> Result<Self> { Ok(Self {}) }
+}
+`;
+
+test("a same-labelled impl block in a different file never merges, even when both are touched", async () => {
+  const { repo, sh } = repoWithFiles({ "src/a.rs": CROSS_FILE_SRC, "src/b.rs": CROSS_FILE_SRC });
+  writeFileSync(join(repo, "src/a.rs"), CROSS_FILE_SRC.replace("Result<Self>", "Result<Self> /* a touched */"));
+  writeFileSync(join(repo, "src/b.rs"), CROSS_FILE_SRC.replace("Result<Self>", "Result<Self> /* b touched */"));
+  sh("git add -A && git commit -qm change");
+
+  const { containers } = await extractSymbols(repo, "base", [
+    { path: "src/a.rs", added: 1, removed: 1 },
+    { path: "src/b.rs", added: 1, removed: 1 },
+  ]);
+
+  expect(containers.length).toBe(2);
+  const a = containers.find(c => c.path === "src/a.rs");
+  const b = containers.find(c => c.path === "src/b.rs");
+  expect(a).toBeDefined();
+  expect(b).toBeDefined();
+  expect(a!.signatures).toEqual(["pub fn open(path: &Path) -> Result<Self> /* a touched */"]);
+  expect(b!.signatures).toEqual(["pub fn open(path: &Path) -> Result<Self> /* b touched */"]);
+  rmSync(repo, { recursive: true, force: true });
+});
+
+// Negative 2: two same-labelled blocks where NEITHER has a touched item
+// (only the inter-block comment is edited) must still emit no container at
+// all — the fix merges in untouched peers of a touched key, it does not
+// start emitting containers for wholly-untouched keys.
+const SPLIT_IMPL_NEITHER_TOUCHED_SRC = `
+impl PulseDB {
+    pub fn open(path: &Path) -> Result<Self> { Ok(Self {}) }
+}
+
+// comment between the two same-labelled impl blocks
+impl PulseDB {
+    pub fn open_with_embedder(path: &Path, e: Arc<dyn Embedder>) -> Result<Self> { Ok(Self {}) }
+}
+`;
+
+test("two same-labelled impl blocks, neither touched, emit no container at all", async () => {
+  const { repo, sh } = repoWith(SPLIT_IMPL_NEITHER_TOUCHED_SRC);
+  writeFileSync(
+    join(repo, "src/db.rs"),
+    SPLIT_IMPL_NEITHER_TOUCHED_SRC.replace(
+      "// comment between the two same-labelled impl blocks",
+      "// an updated comment between the two same-labelled impl blocks",
+    ),
+  );
+  sh("git add -A && git commit -qm change");
+
+  const { symbols, containers } = await extractSymbols(repo, "base", [{ path: "src/db.rs", added: 1, removed: 1 }]);
+  expect(symbols).toEqual([]);
+  expect(containers).toEqual([]);
+  rmSync(repo, { recursive: true, force: true });
+});
