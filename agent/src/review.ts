@@ -137,3 +137,29 @@ export async function runReview(o: ReviewOpts): Promise<ReviewResult> {
 
   return result;
 }
+
+/**
+ * CLI entrypoint. Invoked by the CI hub workflow (`droid.yml`) for the
+ * `code-review` automation. Reads TARGET_DIR / OUT_DIR / BASE_REF / MODEL from
+ * the environment.
+ *
+ * Amendment A14-1: `steps: 25` — `maxSteps: 12` is insufficient for glm-5.2 on
+ * a real diff (proven in Task 13). The model exhausts the budget, opencode
+ * forces text-only mode, and structured output is disabled. 25 is the minimum.
+ */
+if (import.meta.main) {
+  const repo = process.env.TARGET_DIR ?? process.cwd();
+  const out = process.env.OUT_DIR ?? ".";
+  const r = await runReview({
+    repo,
+    base: process.env.BASE_REF ?? "origin/main",
+    outDir: out,
+    reason: defaultReason({
+      model: process.env.MODEL ?? "zai-coding-plan/glm-5.2",
+      promptFile: new URL("./prompts/code-review.md", import.meta.url).pathname,
+      steps: 25,
+    }),
+  });
+  console.log(`verdict=${r.verdict} reason=${r.reason}`);
+  process.exit(r.verdict === "ERROR" || r.verdict === "FAIL" ? 1 : 0);
+}

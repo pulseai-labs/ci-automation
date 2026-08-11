@@ -48,7 +48,7 @@ on:
       model:
         description: 'droid model id as configured on the runner.'
         type: string
-        default: 'custom:glm-5.2-0'
+        default: 'zai-coding-plan/glm-5.2'
       report-status:
         description: >-
           Post a commit status to `comment-on` at `target-ref`, making this
@@ -130,7 +130,7 @@ jobs:
           [ -z "$IN_COMMENT_ISSUE" ] || printf '%s' "$IN_COMMENT_ISSUE" | grep -Eq '^[0-9]{1,10}$' \
             || fail "comment-issue must be numeric"
 
-          printf '%s' "$IN_MODEL" | grep -Eq '^[A-Za-z0-9:._-]{1,64}$' || fail "malformed model id"
+          printf '%s' "$IN_MODEL" | grep -Eq '^[A-Za-z0-9:._/-]{1,64}$' || fail "malformed model id"
 
           if [ -n "$IN_COMMENT_ON" ] && [ -z "$IN_COMMENT_ISSUE" ]; then
             fail "comment-on set without comment-issue"
@@ -221,6 +221,7 @@ jobs:
           persist-credentials: false
 
       - name: Resolve prompt and autonomy
+        if: matrix.automation != 'code-review'
         id: cfg
         shell: bash
         env:
@@ -265,6 +266,7 @@ jobs:
           # remaining mitigation and is not yet in place.
 
       - name: Verify curated skill is present
+        if: matrix.automation != 'code-review'
         shell: bash
         env:
           AUTOMATION: ${{ matrix.automation }}
@@ -279,11 +281,48 @@ jobs:
           fi
           echo "found $(find workspace/.factory/skills -name SKILL.md | wc -l | tr -d ' ') SKILL.md file(s)"
 
+      # The custom review agent (agent/) replaces droid for code-review only.
+      # It runs with NO GitHub credential in its environment. It reads
+      # attacker-influenceable text (diffs, PR bodies); a prompt injection that
+      # succeeds must find no token to exfiltrate and no write path to use.
+      # qa and security-audit still use droid — see the "Run droid" step below.
+      - name: Run review agent
+        if: matrix.automation == 'code-review'
+        id: run
+        shell: bash
+        working-directory: workspace
+        env:
+          TARGET_DIR: ${{ github.workspace }}/workspace/target
+          OUT_DIR: ${{ github.workspace }}/report
+          BASE_REF: origin/main
+          MODEL: ${{ needs.validate.outputs.model }}
+        run: |
+          set -uo pipefail
+          unset GITHUB_TOKEN GH_TOKEN ACTIONS_ID_TOKEN_REQUEST_TOKEN ACTIONS_ID_TOKEN_REQUEST_URL
+          mkdir -p "$OUT_DIR"
+          cd ../.ci-automation/agent
+          bun install --frozen-lockfile
+          bun run src/review.ts
+          echo "rc=$?" >>"$GITHUB_OUTPUT"
+
+      # The custom agent writes report.md and result.json into OUT_DIR. The
+      # downstream Publish/Comment steps expect report/${AUTOMATION}.md, so copy
+      # it to match the convention droid uses.
+      - name: Stage review output
+        if: matrix.automation == 'code-review' && always()
+        shell: bash
+        run: |
+          if [ -f "$GITHUB_WORKSPACE/report/report.md" ]; then
+            cp "$GITHUB_WORKSPACE/report/report.md" "$GITHUB_WORKSPACE/report/code-review.md"
+          fi
+
       # droid runs with NO GitHub credential in its environment. It reads
       # attacker-influenceable text (diffs, PR bodies); a prompt injection that
       # succeeds must find no token to exfiltrate and no write path to use.
+      # Used by qa and security-audit; code-review uses the custom agent above.
       - name: Run droid
-        id: run
+        if: matrix.automation != 'code-review'
+        id: run-droid
         shell: bash
         working-directory: workspace
         env:
@@ -436,37 +475,53 @@ jobs:
         run: |
           set -euo pipefail
           F="report/${AUTOMATION}.md"
-          VERDICT="$(grep -ioE '(VERDICT|Verdict)[: ]+[A-Z][A-Z_-]*' "$F" 2>/dev/null \
-                     | head -1 | grep -oE '[A-Z][A-Z_-]*$' || true)"
 
-          # The agent's own verdict decides the gate where it gave one; the job
-          # outcome decides otherwise. INCONCLUSIVE is deliberately NOT a
-          # failure — "no library code changed" must not block a merge.
-          # An infrastructure failure still BLOCKS — we do not know whether the
-          # code is good — but it is reported as `error`, not `failure`, and
-          # says so plainly. Otherwise a quota reset window is indistinguishable
-          # from bad code on a check that gates merges, and the reviewer debugs
-          # the diff instead of waiting an hour.
-          INFRA=""
-          if [ -f "$F" ]; then
-            case "$(cat "$F")" in
-              *"No active subscription"*|*"Payment Required"*) INFRA="model subscription/payment — NOT a code finding" ;;
-              *"rate limit"*|*"quota"*)                        INFRA="model quota/rate limit — NOT a code finding" ;;
-              *"Exec failed"*)                                 INFRA="droid exec failed, commonly model quota — NOT a code finding" ;;
-              *"insufficient permission"*)                     INFRA="autonomy tier too low — NOT a code finding" ;;
+          # For code-review the verdict comes from result.json (written by the
+          # custom agent). For qa and security-audit the verdict is still parsed
+          # from the report markdown that droid produced — that logic is kept
+          # verbatim in the else branch.
+          if [ "$AUTOMATION" = "code-review" ] && [ -s "$GITHUB_WORKSPACE/report/result.json" ]; then
+            V="$(jq -r '.verdict' "$GITHUB_WORKSPACE/report/result.json")"
+            D="$(jq -r '.reason' "$GITHUB_WORKSPACE/report/result.json")"
+            case "$V" in
+              PASS)          STATE=success; DESC="$D" ;;
+              FAIL)          STATE=failure; DESC="$D" ;;
+              INCONCLUSIVE)  STATE=success; DESC="$D" ;;
+              *)             STATE=error;   DESC="$D" ;;
             esac
-          fi
-
-          if [ -n "$INFRA" ]; then
-            STATE=error; DESC="$INFRA"
           else
-            case "${VERDICT:-}" in
-              PASS)          STATE=success; DESC="PASS" ;;
-              FAIL|FAILED)   STATE=failure; DESC="FAIL — see the report comment" ;;
-              INCONCLUSIVE)  STATE=success; DESC="inconclusive (not applicable to this diff)" ;;
-              *) if [ "$JOB_STATUS" = "success" ]; then STATE=success; DESC="completed";
-                 else STATE=failure; DESC="job ${JOB_STATUS}"; fi ;;
-            esac
+            VERDICT="$(grep -ioE '(VERDICT|Verdict)[: ]+[A-Z][A-Z_-]*' "$F" 2>/dev/null \
+                       | head -1 | grep -oE '[A-Z][A-Z_-]*$' || true)"
+
+            # The agent's own verdict decides the gate where it gave one; the job
+            # outcome decides otherwise. INCONCLUSIVE is deliberately NOT a
+            # failure — "no library code changed" must not block a merge.
+            # An infrastructure failure still BLOCKS — we do not know whether the
+            # code is good — but it is reported as `error`, not `failure`, and
+            # says so plainly. Otherwise a quota reset window is indistinguishable
+            # from bad code on a check that gates merges, and the reviewer debugs
+            # the diff instead of waiting an hour.
+            INFRA=""
+            if [ -f "$F" ]; then
+              case "$(cat "$F")" in
+                *"No active subscription"*|*"Payment Required"*) INFRA="model subscription/payment — NOT a code finding" ;;
+                *"rate limit"*|*"quota"*)                        INFRA="model quota/rate limit — NOT a code finding" ;;
+                *"Exec failed"*)                                 INFRA="droid exec failed, commonly model quota — NOT a code finding" ;;
+                *"insufficient permission"*)                     INFRA="autonomy tier too low — NOT a code finding" ;;
+              esac
+            fi
+
+            if [ -n "$INFRA" ]; then
+              STATE=error; DESC="$INFRA"
+            else
+              case "${VERDICT:-}" in
+                PASS)          STATE=success; DESC="PASS" ;;
+                FAIL|FAILED)   STATE=failure; DESC="FAIL — see the report comment" ;;
+                INCONCLUSIVE)  STATE=success; DESC="inconclusive (not applicable to this diff)" ;;
+                *) if [ "$JOB_STATUS" = "success" ]; then STATE=success; DESC="completed";
+                   else STATE=failure; DESC="job ${JOB_STATUS}"; fi ;;
+              esac
+            fi
           fi
 
           TOK="$(sudo -n /usr/local/libexec/pulseai-mint-token status-token "$STATUS_REPO")"
