@@ -98,6 +98,16 @@ export async function runReview(o: ReviewOpts): Promise<ReviewResult> {
     // Amendment A1: gather() is async (tree-sitter WASM init).
     pack = await gather({ repo: o.repo, base: o.base, skipCargo: o.skipCargo });
 
+    // Short-circuit: no Rust files in the diff → INCONCLUSIVE without a model
+    // turn. Saves tokens and avoids StructuredOutputError when the model gets
+    // an empty evidence pack it cannot review.
+    if (pack.changed.length === 0) {
+      result = finalize([], pack, o.repo);
+      writeResult(o.outDir, result);
+      writeFileSync(join(o.outDir, "report.md"), renderReport(result, pack));
+      return result;
+    }
+
     const deadlineMs = o.deadlineMs ?? DEFAULT_DEADLINE_MS;
     let timer: ReturnType<typeof setTimeout>;
     const deadline = new Promise<never>((_, rej) => {

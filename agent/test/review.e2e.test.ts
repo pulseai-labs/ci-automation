@@ -254,3 +254,28 @@ test("a nonexistent repo still yields a terminal ERROR and a rendered report", a
 
   rmSync(out, { recursive: true, force: true });
 });
+
+test("a diff with no .rs files short-circuits to INCONCLUSIVE without a model turn", async () => {
+  const repo = mkdtempSync(join(tmpdir(), "e2e-noop-"));
+  const out = mkdtempSync(join(tmpdir(), "out-"));
+  const sh = (c: string) => Bun.spawnSync(["bash", "-lc", c], { cwd: repo });
+  sh("git init -q . && git config user.email t@t && git config user.name t");
+  mkdirSync(join(repo, ".github/workflows"), { recursive: true });
+  writeFileSync(join(repo, ".github/workflows/ci.yml"), "name: CI\n");
+  sh("git add -A && git commit -qm base && git branch base");
+  writeFileSync(join(repo, ".github/workflows/ci.yml"), "name: CI\non: push\n");
+  sh("git add -A && git commit -qm change");
+
+  let reasonCalled = false;
+  const mustNotRun = async () => { reasonCalled = true; return { findings: [] }; };
+
+  const r = await runReview({ repo, base: "base", outDir: out, skipCargo: true, reason: mustNotRun });
+  expect(r.verdict).toBe("INCONCLUSIVE");
+  expect(reasonCalled).toBe(false);
+  expect(readResult(out).verdict).toBe("INCONCLUSIVE");
+  const report = readFileSync(join(out, "report.md"), "utf8");
+  expect(report).toContain("VERDICT: INCONCLUSIVE");
+
+  rmSync(repo, { recursive: true, force: true });
+  rmSync(out, { recursive: true, force: true });
+});
