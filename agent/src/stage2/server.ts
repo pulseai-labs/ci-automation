@@ -79,11 +79,23 @@ export async function startServer(opts: StartServerOpts): Promise<ServerHandle> 
   // the guard against an old server that lacks an endpoint the client expects
   // (the "confusing 404 mid-review" case), and it is also where A10-4's no-auth
   // assumption is re-checked — a 401 here would mean auth IS required.
-  const probe = (await client.config.get()) as any;
-  const status = probe?.response?.status;
-  if (status !== 200) {
+  //
+  // I-1: the probe is wrapped so ANY failure tears down the child before the
+  // error propagates. The non-200 branch throws inside the try (caught, closed,
+  // rethrown); a *thrown* probe — connection reset, ECONNREFUSED, a fetch-layer
+  // exception — is caught by the same catch and closed too. Without this, a
+  // thrown probe would orphan the `opencode serve` child, and since startServer
+  // is the lifecycle entry point called for every review, orphans would
+  // accumulate across retries.
+  try {
+    const probe = (await client.config.get()) as any;
+    const status = probe?.response?.status;
+    if (status !== 200) {
+      throw new Error(`opencode server liveness probe failed: HTTP ${status}`);
+    }
+  } catch (e) {
     server.close();
-    throw new Error(`opencode server liveness probe failed: HTTP ${status}`);
+    throw e;
   }
 
   return { client, url: server.url, close: () => server.close() };
