@@ -477,18 +477,25 @@ jobs:
           F="report/${AUTOMATION}.md"
 
           # For code-review the verdict comes from result.json (written by the
-          # custom agent). For qa and security-audit the verdict is still parsed
-          # from the report markdown that droid produced — that logic is kept
-          # verbatim in the else branch.
-          if [ "$AUTOMATION" = "code-review" ] && [ -s "$GITHUB_WORKSPACE/report/result.json" ]; then
-            V="$(jq -r '.verdict' "$GITHUB_WORKSPACE/report/result.json")"
-            D="$(jq -r '.reason' "$GITHUB_WORKSPACE/report/result.json")"
-            case "$V" in
-              PASS)          STATE=success; DESC="$D" ;;
-              FAIL)          STATE=failure; DESC="$D" ;;
-              INCONCLUSIVE)  STATE=success; DESC="$D" ;;
-              *)             STATE=error;   DESC="$D" ;;
-            esac
+          # custom agent). An absent/empty result.json is a hard error: the
+          # orchestrator produced no verdict, so the gate must fail-closed
+          # rather than fall through to the qa/security-audit markdown logic
+          # (which would resolve to the job status and thus fail-open). For qa
+          # and security-audit the verdict is parsed from the report markdown
+          # that droid produced — that logic is kept verbatim in the else branch.
+          if [ "$AUTOMATION" = "code-review" ]; then
+            if [ ! -s "$GITHUB_WORKSPACE/report/result.json" ]; then
+              STATE=error; DESC="orchestrator produced no result.json"
+            else
+              V="$(jq -r '.verdict' "$GITHUB_WORKSPACE/report/result.json")"
+              D="$(jq -r '.reason' "$GITHUB_WORKSPACE/report/result.json")"
+              case "$V" in
+                PASS)          STATE=success; DESC="$D" ;;
+                FAIL)          STATE=failure; DESC="$D" ;;
+                INCONCLUSIVE)  STATE=success; DESC="$D" ;;
+                *)             STATE=error;   DESC="$D" ;;
+              esac
+            fi
           else
             VERDICT="$(grep -ioE '(VERDICT|Verdict)[: ]+[A-Z][A-Z_-]*' "$F" 2>/dev/null \
                        | head -1 | grep -oE '[A-Z][A-Z_-]*$' || true)"
