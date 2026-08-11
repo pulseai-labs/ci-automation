@@ -10,7 +10,9 @@ import { promptWithFormat } from "./prompt";
  * through `deriveVerdict` to PASS — stage 3 never normalises it — so this schema
  * is the ONLY gate. `additionalProperties: false` on both the object and each
  * finding stops the model smuggling extra fields; the `required` list matches
- * the `Finding` interface field-for-field.
+ * the `Finding` interface field-for-field. `maxItems: 50` caps the findings
+ * array so a runaway model emitting hundreds of findings cannot force
+ * validate() to stat that many files (finding M-3).
  */
 export const FINDINGS_SCHEMA = {
   type: "object",
@@ -19,6 +21,7 @@ export const FINDINGS_SCHEMA = {
   properties: {
     findings: {
       type: "array",
+      maxItems: 50,
       items: {
         type: "object",
         additionalProperties: false,
@@ -199,7 +202,15 @@ export async function reason(
   });
 
   // (1) SDK/HTTP-level error — fail-closed even for an unrecognised name.
-  if (res?.error) {
+  // M-1: if `res` itself is null/undefined (e.g. the driver returned nothing),
+  // every optional-chain guard below is falsy and `extractFindings(undefined)`
+  // returns [] — a flawless-looking PASS. Treat an absent result as an error so
+  // it throws instead. Split into its own guard so the `res.error` access below
+  // never dereferences a null `res`.
+  if (!res) {
+    throw new Error("opencode session.prompt returned no result — NOT a code finding");
+  }
+  if (res.error) {
     const t = classifyError(res.error);
     throw new Error(t || `opencode session.prompt error: ${res.error?.name ?? "unknown"} — NOT a code finding`);
   }

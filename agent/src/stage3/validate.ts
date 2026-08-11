@@ -215,7 +215,11 @@ export function validate(
       continue;
     }
     const lines = countLines(readFileSync(abs, "utf8"));
-    if (f.line < 1 || f.line > lines) {
+    // M-2: a fractional (or NaN) line like 2.5 passes both bounds checks
+    // (2.5 >= 1 && 2.5 <= lines), is never in `touched` (integer keys), and
+    // renders as "path:2.5". Number.isInteger also rejects NaN/Infinity,
+    // which the bare bounds check alone admits.
+    if (!Number.isInteger(f.line) || f.line < 1 || f.line > lines) {
       dropped.push({ finding: f, why: `line ${f.line} outside ${f.path} (${lines} lines)`, code: "line-out-of-range" });
       continue;
     }

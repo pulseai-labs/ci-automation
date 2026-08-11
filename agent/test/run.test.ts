@@ -68,6 +68,12 @@ test("FINDINGS_SCHEMA pins category to the five Category values and forbids extr
   ]);
 });
 
+// M-3: the findings array must be capped so a runaway model cannot force
+// validate() to stat hundreds of files.
+test("FINDINGS_SCHEMA caps the findings array at 50 items", () => {
+  expect(FINDINGS_SCHEMA.properties.findings.maxItems).toBe(50);
+});
+
 test("extractFindings stamps source:agent and tolerates an absent findings array", () => {
   const out = extractFindings({ structured: { findings: [{ title: "t", severity: "major" }] } });
   expect(out[0].source).toBe("agent");
@@ -244,6 +250,16 @@ test("reason() throws on a top-level SDK error (res.error) — never a clean PAS
     promptResult: { data: undefined, error: { name: "APIError", data: { message: "boom" } }, response: { status: 502 } },
   });
   await expect(reason(handle, samplePack(), "/repo")).rejects.toThrow(/NOT a code finding/);
+});
+
+// M-1: if the driver returns no `res` at all (null/undefined), every optional-
+// chain guard is falsy and reason() used to return { findings: [], usage: zero }
+// — a flawless-looking PASS. The `!res` guard must turn it into a throw.
+test("reason() throws when the driver returns null/undefined (no res) — never a clean PASS", async () => {
+  const nullHandle = mockHandle({ promptResult: null }).handle;
+  await expect(reason(nullHandle, samplePack(), "/repo")).rejects.toThrow(/NOT a code finding/);
+  const undefHandle = mockHandle({ promptResult: undefined }).handle;
+  await expect(reason(undefHandle, samplePack(), "/repo")).rejects.toThrow(/NOT a code finding/);
 });
 
 test("reason() throws on res.error even for an UNRECOGNISED error name (fail-closed)", async () => {

@@ -121,6 +121,17 @@ test("drops a finding at a negative line", () => {
   ]);
 });
 
+// M-2: a fractional line like 2.5 passes both bounds checks (2.5 >= 1 &&
+// 2.5 <= lines for a 3-line file), is never in `touched` (integer keys),
+// and renders as "path:2.5". The integer guard must drop it.
+test("drops a finding with a fractional line number", () => {
+  const r = validate([f({ line: 2.5 })], pack, repo);
+  expect(r.kept).toEqual([]);
+  expect(r.dropped).toEqual([
+    { finding: f({ line: 2.5 }), why: "line 2.5 outside src/a.rs (3 lines)", code: "line-out-of-range" },
+  ]);
+});
+
 // In REAL_DIFF, line 2 ("two" -> "TWO") is the only line the diff actually
 // touches — lines 1 and 3 are -U5 context. This is the case that a
 // hand-written zero-context fixture cannot exercise (Fix 1 / Fix 2).
