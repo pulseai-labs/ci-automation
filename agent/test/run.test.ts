@@ -221,8 +221,10 @@ test("reason() scopes the session to repo and titles it from HEAD", async () => 
   expect(createCalls[0].body.title).toBe("code-review abcdef123456");
 });
 
-// A12-2: tools must be re-enabled in the prompt body or the agent's
-// permission:"*" deny suppresses them (Task 11 canary).
+// A12-2: the two read-only tools must be passed in the prompt body so they are
+// available for the turn (the agent config's `tools` allowlist restricts the
+// model to exactly these two — Task 11 canary). Note: the agent config no longer
+// uses a wildcard permission deny (Task 13 found it blocks structured output).
 test("reason() passes tools: { read_symbol, grep_bounded } AND format AND agent in the prompt body", async () => {
   const { handle, promptCalls } = mockHandle({ promptResult: SUCCESS_PROMPT });
   await reason(handle, samplePack(), "/repo");

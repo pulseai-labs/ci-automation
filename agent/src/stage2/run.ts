@@ -172,8 +172,11 @@ export function renderPack(pack: EvidencePack): string {
  *       StructuredOutputError lands HERE with `res.error` undefined.
  *
  * Amendment A12-2: `tools: { read_symbol: true, grep_bounded: true }` is passed
- * in the prompt body. The agent config's `permission: { "*": "deny" }` suppresses
- * tool calls for a turn unless the body re-enables them (Task 11 canary).
+ * in the prompt body so the two read-only tools are available for the turn. The
+ * agent config's `tools` allowlist restricts the model to exactly those two
+ * (Task 11 canary); the body re-states them per turn. Note (Task 13): the agent
+ * config no longer uses `permission: { "*": "deny" }` — that wildcard blocked
+ * opencode's structured-output mechanism; see config.ts.
  */
 export async function reason(
   handle: ServerHandle,

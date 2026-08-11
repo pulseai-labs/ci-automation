@@ -57,9 +57,9 @@ export interface ConfigOpts {
 /**
  * Build the opencode `Config` for the `code-review` agent.
  *
- * The return is left structurally inferred (not annotated `Config`) because the
- * agent's `permission` map uses a wildcard key opencode's generated type does
- * not declare; the value is cast at the server boundary instead. The
+ * The return is left structurally inferred (not annotated `Config`) because
+ * the agent's `permission` map keys are not all declared by opencode's
+ * generated type; the value is cast at the server boundary instead. The
  * authoritative capability control is the `tools` map, which is exact and is
  * asserted by the test.
  */
@@ -87,10 +87,31 @@ export function buildConfig(o: ConfigOpts) {
         // `steps`; the actual opencode field is `maxSteps`, not `steps`.
         maxSteps: o.steps,
         tools,
-        // Defence in depth alongside the tools map. Note: opencode's permission
-        // type only declares edit/bash/webfetch/doom_loop/external_directory, so
-        // a `"*"` entry is best-effort — the `tools` allowlist is the hard gate.
-        permission: { "*": "deny" as const },
+        // Defence in depth alongside the tools map. The `tools` map is the
+        // authoritative capability gate: only read_symbol/grep_bounded are
+        // `true`, so the agent literally cannot invoke any other tool (it is
+        // absent from the toolset the model sees), regardless of what lives
+        // here. These explicit permission denials add a second layer for the
+        // operations opencode's permission type declares.
+        //
+        // NOTE (Task 13): this was previously `{ "*": "deny" }`. That wildcard
+        // BLOCKS opencode's structured-output mechanism — the path the `format`
+        // field drives is not a declared tool or permission, so the wildcard
+        // catches it, the model is unable to emit a schema-conformant result,
+        // and every structured turn raises StructuredOutputError (confirmed
+        // empirically: identical config WITHOUT the wildcard produces
+        // structured output; WITH it, never). glm-5.2 itself is compliant —
+        // the bug was here. A non-wildcard permission map keeps the explicit
+        // denials on the five declared dangerous operations while leaving the
+        // structured-output path open, so the security posture is unchanged
+        // for actual tool access (still governed by the `tools` allowlist).
+        permission: {
+          edit: "deny" as const,
+          bash: "deny" as const,
+          webfetch: "deny" as const,
+          doom_loop: "deny" as const,
+          external_directory: "deny" as const,
+        },
       },
     },
   };
