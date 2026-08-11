@@ -1,9 +1,12 @@
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { EvidencePack, Finding, ReviewResult, Usage } from "./types";
 import { gather } from "./stage1";
 import { finalize, renderReport } from "./stage3";
 import { initResult, writeResult } from "./result";
+import { buildConfig } from "./stage2/config";
+import { startServer } from "./stage2/server";
+import { reason as stage2Reason } from "./stage2/run";
 
 export type ReasonFn = (pack: EvidencePack, repo: string)
   => Promise<{ findings: Finding[]; usage?: Usage }>;
@@ -19,6 +22,44 @@ export interface ReviewOpts {
 }
 
 const DEFAULT_DEADLINE_MS = 20 * 60 * 1000;
+
+/**
+ * The real stage 2 wired as the orchestrator's default `reason`. Builds a
+ * hardened opencode config from `promptFile` + `model`, starts a server, drives
+ * one structured-output turn, and tears the server down. One server per review
+ * (startServer is the lifecycle entry point).
+ *
+ * Amendment A13-1: `configDir` is threaded through to `startServer`. Task 10's
+ * `startServer` REQUIRES `configDir` (the absolute path to the agent's
+ * `.opencode` dir) — without it `OPENCODE_CONFIG_DIR` is undefined and the model
+ * gets zero custom tools (read_symbol/grep_bounded are discovered there). It
+ * defaults to this package's own `.opencode` dir, resolved against this source
+ * file so it is correct regardless of the process cwd.
+ */
+export function defaultReason(opts: {
+  model: string;
+  promptFile: string;
+  steps?: number;
+  configDir?: string;
+}): ReasonFn {
+  const configDir =
+    opts.configDir ?? new URL("../.opencode", import.meta.url).pathname;
+  return async (pack, repo) => {
+    const handle = await startServer({
+      configDir,
+      config: buildConfig({
+        model: opts.model,
+        systemPrompt: readFileSync(opts.promptFile, "utf8"),
+        steps: opts.steps ?? 12,
+      }),
+    });
+    try {
+      return await stage2Reason(handle, pack, repo);
+    } finally {
+      handle.close();
+    }
+  };
+}
 
 /** A minimal synthetic pack to render against when `gather()` itself threw
  *  and no real `EvidencePack` was ever produced — see amendment A3. Renders
