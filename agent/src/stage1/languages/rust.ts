@@ -247,8 +247,10 @@ function runClippyImpl(repo: string, base: string, files: ChangedFile[], opts: T
     degraded.push("clippy skipped: clippy component not installed");
     return { findings: [] as Finding[], degraded };
   }
+  const ecDir = effectiveCargoDir(repo);
+  const manifestFlag = ecDir !== repo ? ["--manifest-path", join(ecDir, "Cargo.toml")] : [];
   const p = spawnGuarded(
-    [cargo, "clippy", "--message-format=json", "--quiet"],
+    [cargo, "clippy", ...manifestFlag, "--message-format=json", "--quiet"],
     { cwd: repo, env: { ...process.env } },
   );
   // Important finding 3: cargo present and the clippy component present do
@@ -332,7 +334,9 @@ function runApiToolsImpl(repo: string, base: string, opts: ToolOpts = {}): ApiTo
   if (!have(cargo, "public-api")) {
     degraded.push("cargo public-api unavailable: API-delta section omitted");
   } else {
-    const p = spawnGuarded([cargo, "public-api", "diff", `${base}..HEAD`], { cwd: repo });
+    const ecDir = effectiveCargoDir(repo);
+    const manifestFlag = ecDir !== repo ? ["--manifest-path", join(ecDir, "Cargo.toml")] : [];
+    const p = spawnGuarded([cargo, "public-api", ...manifestFlag, "diff", `${base}..HEAD`], { cwd: repo });
     // Important finding 3: guard the real invocation — see cargoProbe.ts.
     if (p.threw) {
       degraded.push(`cargo public-api failed to start: API-delta section omitted (${p.stderr || "unknown error"})`);
@@ -348,7 +352,9 @@ function runApiToolsImpl(repo: string, base: string, opts: ToolOpts = {}): ApiTo
   if (!have(cargo, "semver-checks")) {
     degraded.push("cargo semver-checks unavailable: breaking-change section omitted");
   } else {
-    const p = spawnGuarded([cargo, "semver-checks", "check-release"], { cwd: repo });
+    const ecDir = effectiveCargoDir(repo);
+    const manifestFlag = ecDir !== repo ? ["--manifest-path", join(ecDir, "Cargo.toml")] : [];
+    const p = spawnGuarded([cargo, "semver-checks", ...manifestFlag, "check-release"], { cwd: repo });
     // Important finding 3: guard the real invocation — see cargoProbe.ts.
     if (p.threw) {
       degraded.push(
@@ -390,25 +396,58 @@ function runApiToolsImpl(repo: string, base: string, opts: ToolOpts = {}): ApiTo
 // ===========================================================================
 
 /**
+ * The directory containing the detected Cargo.toml. Set by `detect()` during
+ * gather(). When non-empty, the cargo tools add `--manifest-path` so they work
+ * with nested manifests (e.g. `backend/Cargo.toml` in a monorepo).
+ *
+ * Test note: since tests call tools directly (without detect()), a stale
+ * cargoDir from a prior test's detect could leak. The tools guard against
+ * this by checking that cargoDir is actually under repo before using it.
+ */
+let cargoDir = "";
+
+/** Returns the cargo manifest directory for the given repo, or the repo
+ *  itself if no nested manifest was detected (the common case). */
+function effectiveCargoDir(repo: string): string {
+  // Only use cargoDir if it's a subdirectory of repo (not stale from another repo).
+  if (cargoDir && (cargoDir.startsWith(repo + "/"))) return cargoDir;
+  return repo;
+}
+
+/**
  * Detects a Rust project. Checks for a root `Cargo.toml` first (the common
- * case). Falls back to a shallow search for nested manifests (e.g.
- * `backend/Cargo.toml` in a monorepo) so these repos are not silently
- * degraded to a generic review. Falls back further to changed `.rs` files
- * (the last-resort signal a project uses Rust without a standard layout).
+ * case), then searches recursively (up to 3 levels deep, skipping build/cache
+ * dirs) for nested manifests (e.g. `backend/Cargo.toml` or
+ * `crates/service/Cargo.toml` in a monorepo). Falls back to changed `.rs`
+ * files if no manifest is found.
+ *
+ * Sets `cargoDir` to the directory containing the detected manifest so the
+ * cargo tools can find it.
  */
 function detectRust(repo: string): boolean {
+  cargoDir = repo; // default: root
   // Root manifest — the common case.
   if (existsSync(join(repo, "Cargo.toml"))) return true;
-  // Nested manifest (one level deep, e.g. `backend/Cargo.toml`).
-  try {
-    for (const entry of readdirSync(repo)) {
-      const subdir = join(repo, entry);
-      const stat = statSync(subdir);
-      if (!stat.isDirectory() || entry.startsWith(".") || entry === "target" || entry === "node_modules") continue;
-      if (existsSync(join(subdir, "Cargo.toml"))) return true;
-    }
-  } catch { /* ignore readdir errors — fall through */ }
-  return false;
+
+  // Recursive search for nested manifests (skips .git, target, node_modules).
+  const SKIP = new Set([".git", "target", "node_modules", ".next", "dist", "build"]);
+  function findManifest(dir: string, depth: number): boolean {
+    if (depth > 3) return false;
+    try {
+      for (const entry of readdirSync(dir)) {
+        if (SKIP.has(entry) || entry.startsWith(".")) continue;
+        const sub = join(dir, entry);
+        if (!statSync(sub).isDirectory()) continue;
+        if (existsSync(join(sub, "Cargo.toml"))) {
+          cargoDir = sub;
+          return true;
+        }
+        if (findManifest(sub, depth + 1)) return true;
+      }
+    } catch { /* ignore */ }
+    return false;
+  }
+  return findManifest(repo, 0);
 }
 
 export const rust: LanguageModule = {

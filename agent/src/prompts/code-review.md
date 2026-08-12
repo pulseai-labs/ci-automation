@@ -38,6 +38,20 @@ orchestrator renders the report.
 Every finding MUST cite a `path` and `line` that exist in the code at HEAD.
 A finding whose location does not resolve is dropped automatically.
 
+Assign a `severity` to each finding using these definitions:
+
+- **blocker** — correctness bug or security defect that produces wrong results
+  in normal use, data loss/corruption in a reachable path, or an API-contract
+  break. Must be fixed before merge.
+- **major** — a real defect that a reasonable reviewer would block the merge
+  for, but is not immediately exploitable or is in a less-traveled path.
+- **minor** — a legitimate issue worth fixing but not worth blocking a merge
+  for. The reviewer should flag it; the author can address it in a follow-up.
+- **nit** — style, naming, or preference. Non-blocking.
+
+The `blocker` and `major` severities gate the merge (the orchestrator fails
+the check). Use them when the finding is a genuine defect, not just a smell.
+
 If the change is correct, return an empty findings array. A review that
 manufactures issues to look thorough is worse than silence.
 
