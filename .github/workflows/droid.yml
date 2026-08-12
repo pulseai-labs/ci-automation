@@ -20,6 +20,10 @@ name: Droid Automation
 
 on:
   workflow_call:
+    secrets:
+      zai_api_key:
+        description: 'Z.AI API key for opencode auth. Required when runner is not self-hosted.'
+        required: false
     inputs:
       automations:
         description: 'Comma-separated: qa, code-review, security-audit'
@@ -165,6 +169,11 @@ jobs:
         automation: ${{ fromJSON(needs.validate.outputs.automations) }}
     permissions:
       contents: read
+      # For hosted-runner code-review: GITHUB_TOKEN needs these to comment on
+      # the PR and post a commit status. Harmless on the self-hosted runner,
+      # which uses the root mint helper instead.
+      pull-requests: write
+      statuses: write
 
     steps:
       # Posted BEFORE any work, so a PR shows the gate as in-progress rather
@@ -177,10 +186,16 @@ jobs:
           STATUS_REPO: ${{ needs.validate.outputs.comment_on }}
           STATUS_SHA: ${{ needs.validate.outputs.target_ref }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          TOK="$(sudo -n /usr/local/libexec/pulseai-mint-token status-token "$STATUS_REPO")"
-          trap 'curl -s -o /dev/null -X DELETE -H "Authorization: token $TOK" https://api.github.com/installation/token || true' EXIT
+          # On hosted runners there is no root mint helper; use GITHUB_TOKEN.
+          if [ -x /usr/local/libexec/pulseai-mint-token ]; then
+            TOK="$(sudo -n /usr/local/libexec/pulseai-mint-token status-token "$STATUS_REPO")"
+            trap 'curl -s -o /dev/null -X DELETE -H "Authorization: token $TOK" https://api.github.com/installation/token || true' EXIT
+          else
+            TOK="$GITHUB_TOKEN"
+          fi
           jq -n --arg c "droid/$AUTOMATION" --arg u "$RUN_URL" \
              '{state:"pending",context:$c,target_url:$u,description:"running on the self-hosted runner"}' \
             | curl -sS --retry 3 --retry-all-errors -o /dev/null -X POST \
@@ -281,6 +296,41 @@ jobs:
           fi
           echo "found $(find workspace/.factory/skills -name SKILL.md | wc -l | tr -d ' ') SKILL.md file(s)"
 
+      # Installs bun, opencode, and Z.AI auth on GitHub-hosted runners. On the
+      # self-hosted Mac mini these are pre-installed, so this step is skipped.
+      - name: Setup agent tools (hosted runner)
+        if: matrix.automation == 'code-review' && inputs.runner != 'self-hosted'
+        shell: bash
+        env:
+          ZAI_API_KEY: ${{ secrets.zai_api_key }}
+          OPENCODE_VERSION: '1.17.8'
+        run: |
+          set -euo pipefail
+          # Install bun
+          curl -fsSL https://bun.sh/install | bash
+          echo "$HOME/.bun/bin" >> "$GITHUB_PATH"
+          export PATH="$HOME/.bun/bin:$PATH"
+          bun --version
+          # Install opencode (Linux x64 binary from GitHub releases)
+          ARCH="$(uname -m)"
+          case "$ARCH" in
+            x86_64)  OC_ARCH="linux-x64" ;;
+            aarch64) OC_ARCH="linux-arm64" ;;
+            *) echo "::error::unsupported arch $ARCH"; exit 1 ;;
+          esac
+          curl -fsSL "https://github.com/anomalyco/opencode/releases/download/v${OPENCODE_VERSION}/opencode-${OC_ARCH}.tar.gz" -o /tmp/opencode.tar.gz
+          tar -xzf /tmp/opencode.tar.gz -C /tmp
+          sudo mv /tmp/opencode /usr/local/bin/opencode
+          sudo chmod +x /usr/local/bin/opencode
+          rm /tmp/opencode.tar.gz
+          opencode --version
+          # Set up Z.AI auth
+          mkdir -p ~/.local/share/opencode
+          jq -n --arg key "$ZAI_API_KEY" \
+            '{"zai-coding-plan":{"key":$key,"type":"api-key"}}' > ~/.local/share/opencode/auth.json
+          chmod 600 ~/.local/share/opencode/auth.json
+          echo "agent tools ready"
+
       # The custom review agent (agent/) replaces droid for code-review only.
       # It runs with NO GitHub credential in its environment. It reads
       # attacker-influenceable text (diffs, PR bodies); a prompt injection that
@@ -378,6 +428,7 @@ jobs:
           COMMENT_ON: ${{ needs.validate.outputs.comment_on }}
           COMMENT_ISSUE: ${{ needs.validate.outputs.comment_issue }}
           MODEL: ${{ needs.validate.outputs.model }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           F="report/${AUTOMATION}.md"
@@ -385,8 +436,13 @@ jobs:
             echo "no report to post (earlier step failed or produced nothing)"
             exit 0
           fi
-          TOK="$(sudo -n /usr/local/libexec/pulseai-mint-token comment-token "$COMMENT_ON")"
-          trap 'curl -s -o /dev/null -X DELETE -H "Authorization: token $TOK" https://api.github.com/installation/token || true' EXIT
+          # On hosted runners there is no root mint helper; use GITHUB_TOKEN.
+          if [ -x /usr/local/libexec/pulseai-mint-token ]; then
+            TOK="$(sudo -n /usr/local/libexec/pulseai-mint-token comment-token "$COMMENT_ON")"
+            trap 'curl -s -o /dev/null -X DELETE -H "Authorization: token $TOK" https://api.github.com/installation/token || true' EXIT
+          else
+            TOK="$GITHUB_TOKEN"
+          fi
           # droid emits markdown. Wrapping it in a code fence — which an
           # earlier version did — renders headings, bold and lists as literal
           # text and is the reason these comments were unreadable. Render it as
@@ -472,6 +528,7 @@ jobs:
           STEP_RC: ${{ steps.run.outputs.rc }}
           JOB_STATUS: ${{ job.status }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           F="report/${AUTOMATION}.md"
@@ -531,8 +588,13 @@ jobs:
             fi
           fi
 
-          TOK="$(sudo -n /usr/local/libexec/pulseai-mint-token status-token "$STATUS_REPO")"
-          trap 'curl -s -o /dev/null -X DELETE -H "Authorization: token $TOK" https://api.github.com/installation/token || true' EXIT
+          # On hosted runners there is no root mint helper; use GITHUB_TOKEN.
+          if [ -x /usr/local/libexec/pulseai-mint-token ]; then
+            TOK="$(sudo -n /usr/local/libexec/pulseai-mint-token status-token "$STATUS_REPO")"
+            trap 'curl -s -o /dev/null -X DELETE -H "Authorization: token $TOK" https://api.github.com/installation/token || true' EXIT
+          else
+            TOK="$GITHUB_TOKEN"
+          fi
           jq -n --arg s "$STATE" --arg c "droid/$AUTOMATION" --arg u "$RUN_URL" --arg d "$DESC" \
              '{state:$s,context:$c,target_url:$u,description:$d}' \
             | curl -sS --retry 3 --retry-all-errors -o /dev/null -X POST \
