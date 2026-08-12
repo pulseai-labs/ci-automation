@@ -122,10 +122,24 @@ function samplePack(over: Partial<EvidencePack> = {}): EvidencePack {
   };
 }
 
-test("renderPack lists each changed symbol as path :: container :: fn name", () => {
+test("renderPack lists each changed symbol as path :: container :: name", () => {
   const out = renderPack(samplePack());
-  expect(out).toContain("  src/db.rs :: impl PulseDB :: fn open");
-  expect(out).toContain("  src/db.rs :: impl PulseDB :: fn close");
+  expect(out).toContain("  src/db.rs :: impl PulseDB :: open");
+  expect(out).toContain("  src/db.rs :: impl PulseDB :: close");
+});
+
+test("renderPack injects the detected LANGUAGE at the top, defaulting to unknown", () => {
+  // No language set on the pack -> "unknown".
+  expect(renderPack(samplePack())).toContain("LANGUAGE: unknown");
+  // A detected language is rendered verbatim.
+  expect(renderPack(samplePack({ language: "Rust" }))).toContain("LANGUAGE: Rust");
+  // LANGUAGE sits between HEAD and CHANGED FILES.
+  const out = renderPack(samplePack({ language: "Rust" }));
+  const headIdx = out.indexOf("HEAD:");
+  const langIdx = out.indexOf("LANGUAGE: Rust");
+  const filesIdx = out.indexOf("CHANGED FILES");
+  expect(headIdx).toBeLessThan(langIdx);
+  expect(langIdx).toBeLessThan(filesIdx);
 });
 
 test("renderPack emits each container's full signature set", () => {
@@ -154,6 +168,7 @@ test("renderPack keeps HEAD, CHANGED FILES, DIFF, PUBLIC API DELTA, clippy and t
     budget: { bytes: 100, capped: ["diff"] },
   }));
   expect(out).toContain("HEAD: abcdef1234567890");
+  expect(out).toContain("LANGUAGE: unknown");
   expect(out).toContain("CHANGED FILES");
   expect(out).toContain("src/db.rs  +3/-1");
   expect(out).toContain("DIFF (unified, 5 lines of context)");
@@ -172,7 +187,7 @@ test("renderPack tolerates a symbol whose container was trimmed (no matching con
     containers: [],
   }));
   // The symbol is still listed...
-  expect(out).toContain("src/db.rs :: impl PulseDB :: fn open");
+  expect(out).toContain("src/db.rs :: impl PulseDB :: open");
   // ...and there is no container block for it.
   expect(out).not.toContain("CONTAINER SIGNATURES:\n\n  src/db.rs :: impl PulseDB");
 });

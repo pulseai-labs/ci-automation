@@ -101,17 +101,18 @@ export function classifyError(err: any): string {
  *   - `pack.symbols: SymbolInfo[]`      the CHANGED functions (path/name/container)
  *   - `pack.containers: ContainerInfo[]` full signature lists, ONE per container
  *
- * The model now sees, in order: (1) every changed symbol as
- * `path :: container :: fn name`, then (2) each container's complete signature
- * set. It needs ALL signatures in a container to spot an absence — a change
- * applied to one function but missing from a sibling. Requirement 4 of A12-1: a
- * changed symbol whose `(path, container)` was trimmed by the byte cap is still
- * listed under CHANGED SYMBOLS; it simply has no container block below, which the
- * header note explains.
+ * The model now sees, in order: (1) the detected `LANGUAGE`, (2) every changed
+ * symbol as `path :: container :: name`, then (3) each container's complete
+ * signature set. It needs ALL signatures in a container to spot an absence — a
+ * change applied to one function but missing from a sibling. Requirement 4 of
+ * A12-1: a changed symbol whose `(path, container)` was trimmed by the byte cap
+ * is still listed under CHANGED SYMBOLS; it simply has no container block below,
+ * which the header note explains.
  */
 export function renderPack(pack: EvidencePack): string {
   const parts: string[] = [
     `HEAD: ${pack.head}`,
+    ``, `LANGUAGE: ${pack.language ?? "unknown"}`,
     ``, `CHANGED FILES`,
     ...pack.changed.map(c => `  ${c.path}  +${c.added}/-${c.removed}`),
     ``, `DIFF (unified, 5 lines of context)`, pack.diff,
@@ -131,7 +132,7 @@ export function renderPack(pack: EvidencePack): string {
       `CHANGED SYMBOLS:`,
     );
     for (const s of pack.symbols) {
-      parts.push(`  ${s.path} :: ${s.container} :: fn ${s.name}`);
+      parts.push(`  ${s.path} :: ${s.container} :: ${s.name}`);
     }
 
     parts.push(``, `CONTAINER SIGNATURES:`);
