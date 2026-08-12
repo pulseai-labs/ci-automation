@@ -1,9 +1,13 @@
 import { test, expect } from "bun:test";
-import { writeFileSync, mkdtempSync, mkdirSync, rmSync } from "node:fs";
+import { writeFileSync, mkdtempSync, mkdirSync, rmSync, chmodSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { extractSymbols } from "../src/stage1/symbols";
+import { rust } from "../src/stage1/languages";
 import type { ContainerInfo, SymbolInfo } from "../src/types";
+
+// ===========================================================================
+// symbol extraction (moved from symbols.test.ts)
+// ===========================================================================
 
 const SRC = `
 impl PulseDB {
@@ -42,7 +46,7 @@ test("a change inside open surfaces open_with_embedder as a sibling SIGNATURE", 
   writeFileSync(join(repo, "src/db.rs"), SRC.replace("let x = 1;", "let x = 2; // migration"));
   sh("git add -A && git commit -qm change");
 
-  const { symbols, containers } = await extractSymbols(repo, "base", [{ path: "src/db.rs", added: 1, removed: 1 }]);
+  const { symbols, containers } = await rust.extractSymbols(repo, "base", [{ path: "src/db.rs", added: 1, removed: 1 }]);
   const open = symbols.find(s => s.name === "open");
   expect(open).toBeDefined();
   expect(open!.container).toBe("impl PulseDB");
@@ -65,7 +69,7 @@ test("a container's signatures include every item, including the one that change
   const { repo, sh } = repoWith(SRC);
   writeFileSync(join(repo, "src/db.rs"), SRC.replace("let x = 1;", "let x = 2;"));
   sh("git add -A && git commit -qm change");
-  const { symbols, containers } = await extractSymbols(repo, "base", [{ path: "src/db.rs", added: 1, removed: 1 }]);
+  const { symbols, containers } = await rust.extractSymbols(repo, "base", [{ path: "src/db.rs", added: 1, removed: 1 }]);
   const open = symbols.find(s => s.name === "open")!;
   const container = containerFor(containers, open)!;
   expect(container.signatures.some(s => /\bfn open\s*\(/.test(s))).toBe(true);
@@ -99,7 +103,7 @@ test("multi-line signatures are captured in full, not truncated to the first lin
   writeFileSync(join(repo, "src/db.rs"), MULTILINE_SIG_SRC.replace("u32 { 7 }", "u32 { 8 }"));
   sh("git add -A && git commit -qm change");
 
-  const { symbols, containers } = await extractSymbols(repo, "base", [{ path: "src/db.rs", added: 1, removed: 1 }]);
+  const { symbols, containers } = await rust.extractSymbols(repo, "base", [{ path: "src/db.rs", added: 1, removed: 1 }]);
   const helper = symbols.find(s => s.name === "helper");
   expect(helper).toBeDefined();
   const container = containerFor(containers, helper!);
@@ -137,7 +141,7 @@ test("braces inside format! strings and doc comments do not desync container par
   );
   sh("git add -A && git commit -qm change");
 
-  const { symbols, containers } = await extractSymbols(repo, "base", [{ path: "src/db.rs", added: 1, removed: 1 }]);
+  const { symbols, containers } = await rust.extractSymbols(repo, "base", [{ path: "src/db.rs", added: 1, removed: 1 }]);
   const tricky = symbols.find(s => s.name === "tricky");
   expect(tricky).toBeDefined();
   expect(tricky!.container).toBe("impl PulseDB");
@@ -166,7 +170,7 @@ test("a multi-line where-clause container header is recognized, including const 
   writeFileSync(join(repo, "src/db.rs"), WHERE_CLAUSE_SRC.replace("u8 { 1 }", "u8 { 2 }"));
   sh("git add -A && git commit -qm change");
 
-  const { symbols, containers } = await extractSymbols(repo, "base", [{ path: "src/db.rs", added: 1, removed: 1 }]);
+  const { symbols, containers } = await rust.extractSymbols(repo, "base", [{ path: "src/db.rs", added: 1, removed: 1 }]);
   const c = symbols.find(s => s.name === "c");
   expect(c).toBeDefined();
   expect(c!.container).toBe("impl<T> Other<T> where T: Send,");
@@ -199,7 +203,7 @@ test("a pure-deletion hunk still surfaces the enclosing (now-shorter) function a
   writeFileSync(join(repo, "src/db.rs"), DELETION_SRC.replace("        run_migration();\n", ""));
   sh("git add -A && git commit -qm change");
 
-  const { symbols, containers } = await extractSymbols(repo, "base", [{ path: "src/db.rs", added: 0, removed: 1 }]);
+  const { symbols, containers } = await rust.extractSymbols(repo, "base", [{ path: "src/db.rs", added: 0, removed: 1 }]);
   const open = symbols.find(s => s.name === "open");
   expect(open).toBeDefined();
   expect(open!.container).toBe("impl PulseDB");
@@ -232,7 +236,7 @@ test("editing only a comment between two functions reports neither as changed", 
   );
   sh("git add -A && git commit -qm change");
 
-  const { symbols, containers } = await extractSymbols(repo, "base", [{ path: "src/db.rs", added: 1, removed: 1 }]);
+  const { symbols, containers } = await rust.extractSymbols(repo, "base", [{ path: "src/db.rs", added: 1, removed: 1 }]);
   expect(symbols).toEqual([]);
   // no symbol was touched, so no container's signature list is emitted either
   expect(containers).toEqual([]);
@@ -257,7 +261,7 @@ test("deleting (not editing) a comment between two functions reports neither as 
   );
   sh("git add -A && git commit -qm change");
 
-  const { symbols, containers } = await extractSymbols(repo, "base", [{ path: "src/db.rs", added: 0, removed: 1 }]);
+  const { symbols, containers } = await rust.extractSymbols(repo, "base", [{ path: "src/db.rs", added: 0, removed: 1 }]);
   expect(symbols).toEqual([]);
   expect(containers).toEqual([]);
   rmSync(repo, { recursive: true, force: true });
@@ -289,7 +293,7 @@ test("a fn nested inside another fn's body is excluded from the symbol list and 
   writeFileSync(join(repo, "src/db.rs"), NESTED_FN_SRC.replace("x + 1", "x + 2"));
   sh("git add -A && git commit -qm change");
 
-  const { symbols, containers } = await extractSymbols(repo, "base", [{ path: "src/db.rs", added: 1, removed: 1 }]);
+  const { symbols, containers } = await rust.extractSymbols(repo, "base", [{ path: "src/db.rs", added: 1, removed: 1 }]);
 
   // the nested helper never appears as its own symbol
   expect(symbols.find(s => s.name === "local_helper")).toBeUndefined();
@@ -331,7 +335,7 @@ test("deleting the very first line of a file does not mark any function changed"
   );
   sh("git add -A && git commit -qm change");
 
-  const { symbols, containers } = await extractSymbols(repo, "base", [{ path: "src/db.rs", added: 0, removed: 1 }]);
+  const { symbols, containers } = await rust.extractSymbols(repo, "base", [{ path: "src/db.rs", added: 0, removed: 1 }]);
   expect(symbols).toEqual([]);
   expect(containers).toEqual([]);
   rmSync(repo, { recursive: true, force: true });
@@ -367,7 +371,7 @@ test("two same-labelled impl blocks in one file are merged into a single contain
   );
   sh("git add -A && git commit -qm change");
 
-  const { symbols, containers } = await extractSymbols(repo, "base", [
+  const { symbols, containers } = await rust.extractSymbols(repo, "base", [
     { path: "src/db.rs", added: 2, removed: 2 },
   ]);
 
@@ -441,7 +445,7 @@ test("only the first of two same-labelled impl blocks is touched — the untouch
   );
   sh("git add -A && git commit -qm change");
 
-  const { symbols, containers } = await extractSymbols(repo, "base", [{ path: "src/db.rs", added: 1, removed: 1 }]);
+  const { symbols, containers } = await rust.extractSymbols(repo, "base", [{ path: "src/db.rs", added: 1, removed: 1 }]);
 
   // only `open` was touched -> it is the only symbol
   expect(symbols.map(s => s.name)).toEqual(["open"]);
@@ -484,7 +488,7 @@ test("three same-labelled impl blocks, only the middle one touched — all three
   );
   sh("git add -A && git commit -qm change");
 
-  const { symbols, containers } = await extractSymbols(repo, "base", [{ path: "src/db.rs", added: 1, removed: 1 }]);
+  const { symbols, containers } = await rust.extractSymbols(repo, "base", [{ path: "src/db.rs", added: 1, removed: 1 }]);
 
   expect(symbols.map(s => s.name)).toEqual(["middle"]);
   expect(containers.length).toBe(1);
@@ -512,7 +516,7 @@ test("a same-labelled impl block in a different file never merges, even when bot
   writeFileSync(join(repo, "src/b.rs"), CROSS_FILE_SRC.replace("Result<Self>", "Result<Self> /* b touched */"));
   sh("git add -A && git commit -qm change");
 
-  const { containers } = await extractSymbols(repo, "base", [
+  const { containers } = await rust.extractSymbols(repo, "base", [
     { path: "src/a.rs", added: 1, removed: 1 },
     { path: "src/b.rs", added: 1, removed: 1 },
   ]);
@@ -553,8 +557,245 @@ test("two same-labelled impl blocks, neither touched, emit no container at all",
   );
   sh("git add -A && git commit -qm change");
 
-  const { symbols, containers } = await extractSymbols(repo, "base", [{ path: "src/db.rs", added: 1, removed: 1 }]);
+  const { symbols, containers } = await rust.extractSymbols(repo, "base", [{ path: "src/db.rs", added: 1, removed: 1 }]);
   expect(symbols).toEqual([]);
   expect(containers).toEqual([]);
+  rmSync(repo, { recursive: true, force: true });
+});
+
+// ===========================================================================
+// clippy + cargo tools (moved from lint.test.ts)
+// ===========================================================================
+
+// --- test helpers ------------------------------------------------------
+
+/** Writes an executable stand-in "cargo" and returns its absolute path.
+ *  `body` receives $1, $2, ... exactly as the real cargo invocations pass
+ *  them (`<sub> --version` for a `have()` probe, `<sub> <flags...>` for the
+ *  real call), so a script can branch on `$1`/`$2` to fake both. */
+function fakeCargo(body: string): string {
+  const dir = mkdtempSync(join(tmpdir(), "fake-cargo-"));
+  const path = join(dir, "cargo");
+  writeFileSync(path, `#!/usr/bin/env bash\n${body}\n`);
+  chmodSync(path, 0o755);
+  return path;
+}
+
+/** A git repo with `content` committed on branch "base", then a second
+ *  commit on the current branch applying `mutate`. */
+function repoWithMutation(content: string, mutate: (c: string) => string): string {
+  const repo = mkdtempSync(join(tmpdir(), "lint-repo-"));
+  const sh = (c: string) => Bun.spawnSync(["bash", "-lc", c], { cwd: repo });
+  sh("git init -q . && git config user.email t@t && git config user.name t");
+  mkdirSync(join(repo, "src"));
+  writeFileSync(join(repo, "src/db.rs"), content);
+  sh("git add -A && git commit -qm base && git branch base");
+  writeFileSync(join(repo, "src/db.rs"), mutate(content));
+  sh("git add -A && git commit -qm change");
+  return repo;
+}
+
+// --- pre-existing tests (brief step 1), updated for the Rust module ---
+
+test("runLinters degrades cleanly when cargo is absent", () => {
+  const r = rust.runLinters("/nonexistent-repo", "main", [], { cargoBin: "definitely-not-cargo" });
+  expect(r.findings).toEqual([]);
+  expect(r.degraded.join(" ")).toContain("clippy");
+});
+
+test("runApiTools degrades cleanly when both tools are absent", () => {
+  const r = rust.runApiTools!("/nonexistent-repo", "main", { cargoBin: "definitely-not-cargo" });
+  expect(r.apiDelta).toBeUndefined();
+  expect(r.semver).toBeUndefined();
+  expect(r.degraded.join(" ")).toContain("public-api");
+  expect(r.degraded.join(" ")).toContain("semver");
+});
+
+// --- Important finding 1: clippy scoped to changed LINES, not changed files ---
+
+const TEN_LINES = ["fn a() {}", "fn b() {}", "fn c() {}", "fn d() {}", "fn e() {}",
+  "fn f() {}", "fn g() {}", "fn h() {}", "fn i() {}", "fn j() {}", ""].join("\n");
+
+test("runLinters keeps only diagnostics whose span overlaps a changed line, not merely a changed file", () => {
+  const repo = repoWithMutation(TEN_LINES, s => s.replace("fn c() {}", "fn c2() {}")); // changes line 3
+  const cargo = fakeCargo(`
+if [[ "$1" == "clippy" && "$2" == "--version" ]]; then
+  exit 0
+fi
+cat <<'JSON'
+{"reason":"compiler-message","message":{"level":"warning","code":{"code":"clippy::x"},"message":"on-changed-line","spans":[{"is_primary":true,"file_name":"src/db.rs","line_start":3,"line_end":3}],"children":[]}}
+{"reason":"compiler-message","message":{"level":"warning","code":{"code":"clippy::x"},"message":"far-from-change","spans":[{"is_primary":true,"file_name":"src/db.rs","line_start":9,"line_end":9}],"children":[]}}
+{"reason":"compiler-message","message":{"level":"warning","code":{"code":"clippy::x"},"message":"overlapping-span","spans":[{"is_primary":true,"file_name":"src/db.rs","line_start":2,"line_end":4}],"children":[]}}
+JSON
+exit 0
+`);
+
+  const r = rust.runLinters(repo, "base", [{ path: "src/db.rs", added: 1, removed: 1 }], { cargoBin: cargo });
+  const titles = r.findings.map(f => f.title);
+
+  // exact match on the changed line: kept
+  expect(titles).toContain("on-changed-line");
+  // span [2,4] never equals the changed row (3) exactly, but overlaps it: kept
+  // — this is the documented policy (hunks.ts rangeTouched): overlap, not exact match.
+  expect(titles).toContain("overlapping-span");
+  // same file, but its span (line 9) touches nothing the diff changed: dropped
+  expect(titles).not.toContain("far-from-change");
+  expect(r.findings.length).toBe(2);
+
+  rmSync(repo, { recursive: true, force: true });
+});
+
+// --- Important finding 2: a broken semver invocation must degrade, not fabricate a Finding ---
+
+test("runApiTools degrades (does not fabricate a Finding) when semver-checks ran but produced no report", () => {
+  const cargo = fakeCargo(`
+if [[ "$1" == "semver-checks" && "$2" == "--version" ]]; then
+  exit 0
+fi
+if [[ "$1" == "semver-checks" && "$2" == "check-release" ]]; then
+  echo "error: no crates.io baseline found for this crate" 1>&2
+  exit 1
+fi
+exit 1
+`);
+  const r = rust.runApiTools!("/tmp", "main", { cargoBin: cargo });
+  // "ran, failed" must land in degraded as undefined -- never as a synthesized
+  // major/api-contract Finding for a check that never validly compared anything.
+  expect(r.semver).toBeUndefined();
+  expect(r.degraded.join(" ")).toContain("semver-checks");
+  // the real failure reason (stderr) must actually be surfaced, not dropped
+  expect(r.degraded.join(" ")).toContain("no crates.io baseline");
+});
+
+test("runApiTools still reports a real breaking change when semver-checks produces a report", () => {
+  const cargo = fakeCargo(`
+if [[ "$1" == "semver-checks" && "$2" == "--version" ]]; then
+  exit 0
+fi
+if [[ "$1" == "semver-checks" && "$2" == "check-release" ]]; then
+  echo "--- failure major: removed function 'pub_fn' ---"
+  exit 1
+fi
+exit 1
+`);
+  const r = rust.runApiTools!("/tmp", "main", { cargoBin: cargo });
+  expect(r.semver?.length).toBe(1);
+  // the finding must carry a non-empty rationale drawn from the report
+  expect(r.semver?.[0]?.rationale).toContain("removed function");
+});
+
+// --- Important finding 3: guard real invocations against a spawn-level throw ---
+// Bun.spawnSync throws synchronously (not a non-zero result) when the process
+// cannot be started at all -- empirically reproduced here with a nonexistent
+// cwd, the reviewer's own repro. `have()` cannot catch this: it never spawns
+// with `cwd: repo`, so a bad *repo* cwd only ever surfaces at the real call.
+
+const BAD_CWD = "/definitely/does/not/exist/nope";
+
+test("runLinters guards a spawn-level throw (bad cwd) and degrades instead of throwing", () => {
+  const r = rust.runLinters(BAD_CWD, "main", [], { cargoBin: "true" });
+  expect(r.findings).toEqual([]);
+  expect(r.degraded.length).toBeGreaterThan(0);
+  // I1: the previous version of this test asserted only `.length > 0`,
+  // which the OTHER degrade branch in runClippy ("clippy skipped: build
+  // failed", lint.ts:40) also satisfies — deleting the `if (p.threw)`
+  // branch entirely (lint.ts:35) left this test green because that later
+  // branch's non-zero-exit check still degrades on a spawn-level throw's
+  // default `exitCode: -1`. Assert the distinguishing string that only the
+  // `p.threw` branch itself produces.
+  expect(r.degraded.join(" ")).toContain("failed to start");
+});
+
+test("runApiTools guards a spawn-level throw (bad cwd) and degrades instead of throwing", () => {
+  const r = rust.runApiTools!(BAD_CWD, "main", { cargoBin: "true" });
+  expect(r.apiDelta).toBeUndefined();
+  expect(r.semver).toBeUndefined();
+  expect(r.degraded.length).toBeGreaterThan(0);
+});
+
+// --- Important finding 4: consolidated have() gives runClippy an accurate ---
+// --- degrade message for "component missing" vs. "build failed"          ---
+
+test("runLinters distinguishes a missing clippy component from a real build failure", () => {
+  const missingComponent = fakeCargo(`
+if [[ "$2" == "--version" ]]; then
+  exit 1
+fi
+exit 1
+`);
+  const componentResult = rust.runLinters("/tmp", "main", [], { cargoBin: missingComponent });
+  expect(componentResult.degraded.join(" ")).toContain("component");
+  expect(componentResult.degraded.join(" ")).not.toContain("build failed");
+
+  const buildFailure = fakeCargo(`
+if [[ "$2" == "--version" ]]; then
+  exit 0
+fi
+echo "error: could not compile probe due to 1 previous error" 1>&2
+exit 101
+`);
+  const buildResult = rust.runLinters("/tmp", "main", [], { cargoBin: buildFailure });
+  expect(buildResult.degraded.join(" ")).toContain("build failed");
+});
+
+// --- category mapping based on lint level ---
+
+test("runLinters maps error-level diagnostics to correctness and warning-level to maintainability", () => {
+  const repo = repoWithMutation(TEN_LINES, s => s.replace("fn a() {}", "fn a2() {}"));
+  const cargo = fakeCargo(`
+if [[ "$1" == "clippy" && "$2" == "--version" ]]; then
+  exit 0
+fi
+cat <<'JSON'
+{"reason":"compiler-message","message":{"level":"error","code":{"code":"clippy::eq_op"},"message":"correctness-lint","spans":[{"is_primary":true,"file_name":"src/db.rs","line_start":1,"line_end":1}],"children":[]}}
+{"reason":"compiler-message","message":{"level":"warning","code":{"code":"clippy::needless_return"},"message":"style-lint","spans":[{"is_primary":true,"file_name":"src/db.rs","line_start":1,"line_end":1}],"children":[]}}
+JSON
+exit 0
+`);
+
+  const r = rust.runLinters(repo, "base", [{ path: "src/db.rs", added: 1, removed: 1 }], { cargoBin: cargo });
+  expect(r.findings.length).toBe(2);
+
+  const correctness = r.findings.find(f => f.title === "correctness-lint");
+  expect(correctness?.category).toBe("correctness");
+  // I1: this test previously asserted only `.category` — a mutation
+  // hardcoding `severity: "minor"` regardless of `msg.level` (lint.ts:71)
+  // left the full suite green, because nothing anywhere checked
+  // `.severity` on a clippy finding. verdict.ts's DEFAULT_GATE only gates
+  // on "blocker"/"major", so this mapping is the entire clippy merge gate.
+  expect(correctness?.severity).toBe("major");
+
+  const maintainability = r.findings.find(f => f.title === "style-lint");
+  expect(maintainability?.category).toBe("maintainability");
+  expect(maintainability?.severity).toBe("minor");
+
+  rmSync(repo, { recursive: true, force: true });
+});
+
+// --- I1: attribute to the PRIMARY span, not merely the first span ---
+
+test("runLinters attributes a diagnostic to its primary span, not merely the first span in the array", () => {
+  const repo = repoWithMutation(TEN_LINES, s => s.replace("fn c() {}", "fn c2() {}")); // changes line 3
+  const cargo = fakeCargo(`
+if [[ "$1" == "clippy" && "$2" == "--version" ]]; then
+  exit 0
+fi
+cat <<'JSON'
+{"reason":"compiler-message","message":{"level":"warning","code":{"code":"clippy::x"},"message":"primary-not-first","spans":[{"is_primary":false,"file_name":"src/other.rs","line_start":9,"line_end":9},{"is_primary":true,"file_name":"src/db.rs","line_start":3,"line_end":3}],"children":[]}}
+JSON
+exit 0
+`);
+
+  const r = rust.runLinters(repo, "base", [{ path: "src/db.rs", added: 1, removed: 1 }], { cargoBin: cargo });
+  // `spans.find(s => s.is_primary) ?? spans[0]` (lint.ts:52) mutated to
+  // `spans[0]` picks the non-primary "src/other.rs" span instead — which
+  // is not in `changedFilePaths` (only "src/db.rs" was passed as changed),
+  // so the finding is dropped entirely under the mutation. Correct
+  // behavior keeps it, attributed to the primary span's file and line.
+  const finding = r.findings.find(f => f.title === "primary-not-first");
+  expect(finding).toBeDefined();
+  expect(finding?.path).toBe("src/db.rs");
+  expect(finding?.line).toBe(3);
+
   rmSync(repo, { recursive: true, force: true });
 });

@@ -1,8 +1,6 @@
 import type { EvidencePack } from "../types";
 import { getDiff, getChangedFiles, cap } from "./diff";
-import { extractSymbols } from "./symbols";
-import { runClippy } from "./lint";
-import { runApiDelta, runSemverChecks } from "./cargoTools";
+import { rust } from "./languages";
 
 export const CAPS = {
   diff: 150_000,
@@ -98,7 +96,7 @@ export async function gather(o: GatherOpts): Promise<EvidencePack> {
   // O(symbols × container size) — each symbol's full sibling signature
   // list — now lives once per container in `containers`, which is what the
   // cap below bounds.
-  const extracted = await extractSymbols(o.repo, o.base, changed);
+  const extracted = await rust.extractSymbols(o.repo, o.base, changed);
   const symbols = extracted.symbols;
   const containerTrim = trimToCap(
     extracted.containers,
@@ -115,7 +113,7 @@ export async function gather(o: GatherOpts): Promise<EvidencePack> {
 
   if (!o.skipCargo) {
     const toolOpts = o.cargoBin ? { cargoBin: o.cargoBin } : {};
-    const c = runClippy(o.repo, o.base, changed, toolOpts);
+    const c = rust.runLinters(o.repo, o.base, changed, toolOpts);
     clippy = c.findings; degraded.push(...c.degraded);
     const clippyTrim = trimToCap(
       clippy,
@@ -128,14 +126,12 @@ export async function gather(o: GatherOpts): Promise<EvidencePack> {
     );
     clippy = clippyTrim.kept;
     if (clippyTrim.capped) capped.push("clippy");
-    const a = runApiDelta(o.repo, o.base, toolOpts);
+    const a = rust.runApiTools!(o.repo, o.base, toolOpts);
     if (a.apiDelta) {
       const t = cap(a.apiDelta, CAPS.apiDelta);
       apiDelta = t.text; if (t.capped) capped.push("apiDelta");
     }
-    degraded.push(...a.degraded);
-    const s = runSemverChecks(o.repo, toolOpts);
-    semver = s.semver; degraded.push(...s.degraded);
+    semver = a.semver; degraded.push(...a.degraded);
   } else {
     degraded.push("cargo sections skipped by caller");
   }
