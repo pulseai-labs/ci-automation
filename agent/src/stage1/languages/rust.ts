@@ -6,6 +6,7 @@ import type { ChangedFile, ContainerInfo, Finding, SymbolInfo } from "../../type
 import { changedLines, rangeTouched, type ChangedLines } from "../hunks";
 import { have, spawnGuarded } from "../cargoProbe";
 import type { ApiToolsResult, LanguageModule, LinterResult, SymbolResult, ToolOpts } from "./types";
+import { SYMBOL_PATTERNS } from "./patterns";
 
 // ===========================================================================
 // symbol extraction — moved verbatim from symbols.ts
@@ -395,5 +396,5 @@ export const rust: LanguageModule = {
   extractSymbols: extractSymbolsImpl,
   runLinters: runClippyImpl,
   runApiTools: runApiToolsImpl,
-  readSymbolPattern: "\\bfn\\s+${name}\\b",
+  readSymbolPattern: SYMBOL_PATTERNS.rust,
 };

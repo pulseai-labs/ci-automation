@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { resolve, join } from "node:path";
 import { cap } from "../../stage1/diff";
+import { getSymbolPattern } from "../../stage1/languages/patterns";
 
 /**
  * `read_symbol` — the pure, server-free implementation.
@@ -23,9 +24,11 @@ export function readSymbolImpl(repo: string, path: string, name: string, capByte
   if (!abs.startsWith(root + "/") && abs !== root) {
     throw new Error(`refused: ${path} resolves outside the repository root`);
   }
+  const langName = process.env.REVIEW_LANGUAGE ?? "rust";
+  const re = new RegExp(getSymbolPattern(langName).replace("${name}", name));
+
   const src = readFileSync(abs, "utf8");
   const lines = src.split("\n");
-  const re = new RegExp(`\\bfn\\s+${name}\\b`);
 
   let start = -1;
   for (let i = 0; i < lines.length; i++) { if (re.test(lines[i])) { start = i; break; } }

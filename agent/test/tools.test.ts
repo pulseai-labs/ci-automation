@@ -89,6 +89,7 @@ function makeSelfContainedAgentDir(): string {
   copy("src/stage2/tools/read_symbol.ts");
   copy("src/stage2/tools/grep_bounded.ts");
   copy("src/stage1/diff.ts");
+  copy("src/stage1/languages/patterns.ts");
   copy("src/types.ts");
   writeFileSync(join(d, ".opencode", "opencode.json"), "{}");
   // Gives opencode's `bun install @opencode-ai/plugin` a clean target so it
