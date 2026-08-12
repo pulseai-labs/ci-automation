@@ -260,6 +260,7 @@ test("a diff with no .rs files short-circuits to INCONCLUSIVE without a model tu
   const out = mkdtempSync(join(tmpdir(), "out-"));
   const sh = (c: string) => Bun.spawnSync(["bash", "-lc", c], { cwd: repo });
   sh("git init -q . && git config user.email t@t && git config user.name t");
+  writeFileSync(join(repo, "Cargo.toml"), "[package]\nname = \"e2e-noop\"\nversion = \"0.1.0\"\nedition = \"2021\"\n");
   mkdirSync(join(repo, ".github/workflows"), { recursive: true });
   writeFileSync(join(repo, ".github/workflows/ci.yml"), "name: CI\n");
   sh("git add -A && git commit -qm base && git branch base");

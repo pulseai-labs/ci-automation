@@ -1,6 +1,6 @@
-import type { EvidencePack } from "../types";
+import type { EvidencePack, SymbolInfo, ContainerInfo } from "../types";
 import { getDiff, getChangedFiles, cap } from "./diff";
-import { rust } from "./languages";
+import { detectLanguage } from "./languages";
 
 export const CAPS = {
   diff: 150_000,
@@ -87,33 +87,43 @@ export async function gather(o: GatherOpts): Promise<EvidencePack> {
   const head = Bun.spawnSync(["git", "rev-parse", "HEAD"], { cwd: o.repo })
     .stdout.toString().trim();
 
-  const changed = getChangedFiles(o.repo, o.base, "*.rs");
-  const d = getDiff(o.repo, o.base, "*.rs", o.diffCap ?? CAPS.diff);
+  const lang = detectLanguage(o.repo);
+  const filePattern = lang?.filePattern ?? "*";
+  const changed = getChangedFiles(o.repo, o.base, filePattern);
+  const d = getDiff(o.repo, o.base, filePattern, o.diffCap ?? CAPS.diff);
   if (d.capped) capped.push("diff");
 
   // `symbols` is small by construction (four short string fields each) and
   // is left uncapped. The evidence that used to make this section
   // O(symbols × container size) — each symbol's full sibling signature
   // list — now lives once per container in `containers`, which is what the
-  // cap below bounds.
-  const extracted = await rust.extractSymbols(o.repo, o.base, changed);
-  const symbols = extracted.symbols;
-  const containerTrim = trimToCap(
-    extracted.containers,
-    CAPS.containers,
-    // deterministic trim: keep whole containers in path/label order until the cap
-    (a, b) => a.path.localeCompare(b.path) || a.container.localeCompare(b.container),
-  );
-  const containers = containerTrim.kept;
-  if (containerTrim.capped) capped.push("containers");
+  // cap below bounds. Symbols and containers are only populated when a
+  // language module is detected; otherwise the diff is still gathered (with
+  // the `"*"` pattern) but symbol/linter sections are omitted.
+  let symbols: SymbolInfo[] = [];
+  let containers: ContainerInfo[] = [];
+  if (lang) {
+    const extracted = await lang.extractSymbols(o.repo, o.base, changed);
+    symbols = extracted.symbols;
+    const containerTrim = trimToCap(
+      extracted.containers,
+      CAPS.containers,
+      // deterministic trim: keep whole containers in path/label order until the cap
+      (a, b) => a.path.localeCompare(b.path) || a.container.localeCompare(b.container),
+    );
+    containers = containerTrim.kept;
+    if (containerTrim.capped) capped.push("containers");
+  } else {
+    degraded.push("no language module detected — symbols omitted");
+  }
 
   let clippy: EvidencePack["clippy"] = [];
   let apiDelta: string | undefined;
   let semver: EvidencePack["semver"];
 
-  if (!o.skipCargo) {
+  if (!o.skipCargo && lang) {
     const toolOpts = o.cargoBin ? { cargoBin: o.cargoBin } : {};
-    const c = rust.runLinters(o.repo, o.base, changed, toolOpts);
+    const c = lang.runLinters(o.repo, o.base, changed, toolOpts);
     clippy = c.findings; degraded.push(...c.degraded);
     const clippyTrim = trimToCap(
       clippy,
@@ -126,18 +136,21 @@ export async function gather(o: GatherOpts): Promise<EvidencePack> {
     );
     clippy = clippyTrim.kept;
     if (clippyTrim.capped) capped.push("clippy");
-    const a = rust.runApiTools!(o.repo, o.base, toolOpts);
-    if (a.apiDelta) {
-      const t = cap(a.apiDelta, CAPS.apiDelta);
-      apiDelta = t.text; if (t.capped) capped.push("apiDelta");
+    if (lang.runApiTools) {
+      const a = lang.runApiTools(o.repo, o.base, toolOpts);
+      if (a.apiDelta) {
+        const t = cap(a.apiDelta, CAPS.apiDelta);
+        apiDelta = t.text; if (t.capped) capped.push("apiDelta");
+      }
+      semver = a.semver; degraded.push(...a.degraded);
     }
-    semver = a.semver; degraded.push(...a.degraded);
   } else {
-    degraded.push("cargo sections skipped by caller");
+    degraded.push(o.skipCargo ? "cargo sections skipped by caller" : "no language module — cargo sections omitted");
   }
 
   const pack: EvidencePack = {
     head, diff: d.diff, changed, symbols, containers, clippy, apiDelta, semver,
+    language: lang?.name,
     budget: { bytes: 0, capped }, degraded,
   };
   pack.budget.bytes = Buffer.byteLength(JSON.stringify(pack), "utf8");

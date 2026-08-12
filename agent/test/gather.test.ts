@@ -27,11 +27,17 @@ maybe("gather records what it truncated and what it degraded", async () => {
   expect(Array.isArray(p.degraded)).toBe(true);
 });
 
+maybe("gather records the detected language", async () => {
+  const p = await gather({ repo: REPO, base: "origin/main", skipCargo: true });
+  expect(p.language).toBe("rust");
+});
+
 /** A self-contained git repo with a base branch and a >1000-byte Rust diff. */
 function fixtureRepo(): string {
   const repo = mkdtempSync(join(tmpdir(), "gather-"));
   const sh = (c: string) => Bun.spawnSync(["bash", "-lc", c], { cwd: repo });
   sh("git init -q . && git config user.email t@t && git config user.name t");
+  writeFileSync(join(repo, "Cargo.toml"), "[package]\nname = \"fixture\"\nversion = \"0.1.0\"\nedition = \"2021\"\n");
   mkdirSync(join(repo, "src"));
   writeFileSync(join(repo, "src/a.rs"), "impl T {\n    fn one() {}\n}\n");
   sh("git add -A && git commit -qm base && git branch base");
@@ -121,6 +127,7 @@ function manyLinesFixtureRepo(n: number): string {
   const repo = mkdtempSync(join(tmpdir(), "gather-clippy-"));
   const sh = (c: string) => Bun.spawnSync(["bash", "-lc", c], { cwd: repo });
   sh("git init -q . && git config user.email t@t && git config user.name t");
+  writeFileSync(join(repo, "Cargo.toml"), "[package]\nname = \"fixture\"\nversion = \"0.1.0\"\nedition = \"2021\"\n");
   mkdirSync(join(repo, "src"));
   const base = Array.from({ length: n }, (_, i) => `fn f${i}() {}`).join("\n") + "\n";
   writeFileSync(join(repo, "src/a.rs"), base);
@@ -231,6 +238,7 @@ function hugeDiffFixtureRepo(nFns: number, docRepeat: number): string {
   const repo = mkdtempSync(join(tmpdir(), "gather-bigdiff-"));
   const sh = (c: string) => Bun.spawnSync(["bash", "-lc", c], { cwd: repo });
   sh("git init -q . && git config user.email t@t && git config user.name t");
+  writeFileSync(join(repo, "Cargo.toml"), "[package]\nname = \"fixture\"\nversion = \"0.1.0\"\nedition = \"2021\"\n");
   mkdirSync(join(repo, "src"));
   writeFileSync(join(repo, "src/a.rs"), "impl T {\n    fn one() {}\n}\n");
   sh("git add -A && git commit -qm base && git branch base");
@@ -294,6 +302,7 @@ function manyContainersFixtureRepo(m: number, bigIdx: number, smallItems: number
   const repo = mkdtempSync(join(tmpdir(), "gather-containers-"));
   const sh = (c: string) => Bun.spawnSync(["bash", "-lc", c], { cwd: repo });
   sh("git init -q . && git config user.email t@t && git config user.name t");
+  writeFileSync(join(repo, "Cargo.toml"), "[package]\nname = \"fixture\"\nversion = \"0.1.0\"\nedition = \"2021\"\n");
   mkdirSync(join(repo, "src"));
   writeFileSync(join(repo, "src/a.rs"), "impl Placeholder {\n    fn zzz() {}\n}\n");
   sh("git add -A && git commit -qm base && git branch base");
@@ -464,4 +473,21 @@ test("fixture: containers bytes scale with the number of containers, not the num
     // regression; the `flatMap(...).length` assertion above is what does.
     expect(containersBytes * 10).toBeLessThan(oldStyleBytes);
   } finally { rmSync(repo, { recursive: true, force: true }); }
+});
+
+// Task 4: gather() records the detected language via detectLanguage. When no
+// language manifest (e.g. Cargo.toml) is present, `language` must be
+// undefined — the diff is still gathered (with the "*" pattern) but symbols
+// and linters are omitted.
+test("gather returns language undefined when no manifest is present", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "nolang-"));
+  const sh = (c: string) => Bun.spawnSync(["bash", "-lc", c], { cwd: dir });
+  sh("git init -q . && git config user.email t@t && git config user.name t");
+  writeFileSync(join(dir, "README.md"), "hello\n");
+  sh("git add -A && git commit -qm base && git branch base");
+  writeFileSync(join(dir, "README.md"), "hello world\n");
+  sh("git add -A && git commit -qm change");
+  const p = await gather({ repo: dir, base: "base", skipCargo: true });
+  expect(p.language).toBeUndefined();
+  rmSync(dir, { recursive: true, force: true });
 });

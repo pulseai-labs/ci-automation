@@ -57,6 +57,8 @@ export interface EvidencePack {
   clippy: Finding[];
   apiDelta?: string;
   semver?: Finding[];
+  /** detected by gather() via detectLanguage; undefined when no module matches */
+  language?: string;
   budget: { bytes: number; capped: string[] };
   degraded: string[];
 }
