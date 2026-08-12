@@ -20,19 +20,19 @@ beforeAll(() => {
 afterAll(() => rmSync(repo, { recursive: true, force: true }));
 
 test("getChangedFiles lists only .rs files with counts", () => {
-  const files = getChangedFiles(repo, "base");
+  const files = getChangedFiles(repo, "base", "*.rs");
   expect(files.map(f => f.path).sort()).toEqual(["src/a.rs", "src/b.rs"]);
   expect(files.find(f => f.path === "src/b.rs")!.added).toBe(1);
 });
 
 test("getDiff returns unified diff with context", () => {
-  const { diff, capped } = getDiff(repo, "base", 1_000_000);
+  const { diff, capped } = getDiff(repo, "base", "*.rs", 1_000_000);
   expect(diff).toContain("fn two()");
   expect(capped).toBe(false);
 });
 
 test("getDiff caps and marks truncation, reporting the pre-truncation size", () => {
-  const { diff, capped, rawBytes } = getDiff(repo, "base", 40);
+  const { diff, capped, rawBytes } = getDiff(repo, "base", "*.rs", 40);
   expect(capped).toBe(true);
   expect(diff.length).toBeLessThanOrEqual(40 + TRUNCATION_MARKER.length + 40);
   expect(diff).toContain("truncated");

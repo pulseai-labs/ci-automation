@@ -36,16 +36,16 @@ export function cap(text: string, limit: number): { text: string; capped: boolea
   return { text: kept + marker, capped: true, rawBytes: raw };
 }
 
-export function getChangedFiles(repo: string, base: string): ChangedFile[] {
-  const out = git(repo, ["diff", "--numstat", `${base}...HEAD`, "--", "*.rs"]);
+export function getChangedFiles(repo: string, base: string, filePattern: string): ChangedFile[] {
+  const out = git(repo, ["diff", "--numstat", `${base}...HEAD`, "--", filePattern]);
   return out.trim().split("\n").filter(Boolean).map(line => {
     const [added, removed, path] = line.split("\t");
     return { path, added: Number(added) || 0, removed: Number(removed) || 0 };
   });
 }
 
-export function getDiff(repo: string, base: string, limit: number) {
-  const raw = git(repo, ["diff", "-U5", `${base}...HEAD`, "--", "*.rs"]);
+export function getDiff(repo: string, base: string, filePattern: string, limit: number) {
+  const raw = git(repo, ["diff", "-U5", `${base}...HEAD`, "--", filePattern]);
   const { text, capped, rawBytes } = cap(raw, limit);
   return { diff: text, capped, rawBytes };
 }

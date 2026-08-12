@@ -89,8 +89,8 @@ export async function gather(o: GatherOpts): Promise<EvidencePack> {
   const head = Bun.spawnSync(["git", "rev-parse", "HEAD"], { cwd: o.repo })
     .stdout.toString().trim();
 
-  const changed = getChangedFiles(o.repo, o.base);
-  const d = getDiff(o.repo, o.base, o.diffCap ?? CAPS.diff);
+  const changed = getChangedFiles(o.repo, o.base, "*.rs");
+  const d = getDiff(o.repo, o.base, "*.rs", o.diffCap ?? CAPS.diff);
   if (d.capped) capped.push("diff");
 
   // `symbols` is small by construction (four short string fields each) and
