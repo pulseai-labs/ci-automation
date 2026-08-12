@@ -1,3 +1,5 @@
+import { existsSync } from "node:fs";
+
 /**
  * Stage 2 configuration — the hardened opencode `Config` object.
  *
@@ -130,11 +132,27 @@ export function buildConfig(o: ConfigOpts) {
   // When a per-repo skill is requested, register it under `skills.paths` so
   // opencode discovers the SKILL.md at `${configDir}/skills/${skillName}`.
   // Absent this block the agent runs general review only (the Phase 1 default).
-  // The cast is localised: the rest of `config` stays structurally inferred;
-  // `skills` is the one optional top-level key the SDK adds under this path.
+  //
+  // TRUST MODEL: skills are hub-global, committed to this repo's
+  // `.opencode/skills/<name>/SKILL.md`, NOT loaded from the untrusted PR
+  // checkout. `OPENCODE_DISABLE_PROJECT_CONFIG=1` blocks the PR's `.opencode/`
+  // walk-up; a skill from a PR would be attacker-controllable prompt-injection
+  // content. Per-repo review knowledge is curated here by the operator.
+  // Phase 5 builds the skill library.
   if (o.skillName) {
+    const skillPath = `${o.configDir}/skills/${o.skillName}`;
+    const skillFile = `${skillPath}/SKILL.md`;
+    if (!existsSync(skillFile)) {
+      throw new Error(
+        `review skill not found: ${skillFile}. Skills are curated in the ` +
+        `agent's .opencode/skills/ directory (trusted), not loaded from the ` +
+        `PR checkout. Add the skill or omit the 'skill' input.`,
+      );
+    }
+    // The cast is localised: the rest of `config` stays structurally inferred;
+    // `skills` is the one optional top-level key the SDK adds under this path.
     (config as any).skills = {
-      paths: [`${o.configDir}/skills/${o.skillName}`],
+      paths: [skillPath],
     };
   }
 
