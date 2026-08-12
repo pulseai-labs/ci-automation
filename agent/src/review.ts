@@ -54,15 +54,23 @@ export function defaultReason(opts: {
   const configDir =
     opts.configDir ?? new URL("../.opencode", import.meta.url).pathname;
   return async (pack, repo) => {
+    // Build the system prompt: general prompt + optional skill content.
+    // Skills are injected directly rather than loaded via opencode's `skill`
+    // tool (which is denied) because in a headless CI context the operator
+    // specifies the skill — the model should not need to "decide" to load it.
+    let systemPrompt = readFileSync(opts.promptFile, "utf8");
+    if (opts.skillName) {
+      const skillFile = `${configDir}/skills/${opts.skillName}/SKILL.md`;
+      const skillContent = readFileSync(skillFile, "utf8");
+      systemPrompt += `\n\n## Project-Specific Review Skill: ${opts.skillName}\n\n${skillContent}`;
+    }
     const handle = await startServer({
       configDir,
       reviewLanguage: "rust", // Phase 1: always Rust. Phase 4+ reads from detection.
       config: buildConfig({
         model: opts.model,
-        systemPrompt: readFileSync(opts.promptFile, "utf8"),
+        systemPrompt,
         steps: opts.steps ?? 25,
-        skillName: opts.skillName,
-        configDir,
       }),
     });
     try {
