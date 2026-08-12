@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Parser, Language, type Node } from "web-tree-sitter";
@@ -389,9 +389,31 @@ function runApiToolsImpl(repo: string, base: string, opts: ToolOpts = {}): ApiTo
 // the module
 // ===========================================================================
 
+/**
+ * Detects a Rust project. Checks for a root `Cargo.toml` first (the common
+ * case). Falls back to a shallow search for nested manifests (e.g.
+ * `backend/Cargo.toml` in a monorepo) so these repos are not silently
+ * degraded to a generic review. Falls back further to changed `.rs` files
+ * (the last-resort signal a project uses Rust without a standard layout).
+ */
+function detectRust(repo: string): boolean {
+  // Root manifest — the common case.
+  if (existsSync(join(repo, "Cargo.toml"))) return true;
+  // Nested manifest (one level deep, e.g. `backend/Cargo.toml`).
+  try {
+    for (const entry of readdirSync(repo)) {
+      const subdir = join(repo, entry);
+      const stat = statSync(subdir);
+      if (!stat.isDirectory() || entry.startsWith(".") || entry === "target" || entry === "node_modules") continue;
+      if (existsSync(join(subdir, "Cargo.toml"))) return true;
+    }
+  } catch { /* ignore readdir errors — fall through */ }
+  return false;
+}
+
 export const rust: LanguageModule = {
   name: "rust",
-  detect: (repo: string) => existsSync(join(repo, "Cargo.toml")),
+  detect: detectRust,
   filePattern: "*.rs",
   extractSymbols: extractSymbolsImpl,
   runLinters: runClippyImpl,

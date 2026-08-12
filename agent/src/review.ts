@@ -1,5 +1,5 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import type { EvidencePack, Finding, ReviewResult, Usage } from "./types";
 import { gather } from "./stage1";
 import { finalize, renderReport } from "./stage3";
@@ -60,7 +60,24 @@ export function defaultReason(opts: {
     // specifies the skill — the model should not need to "decide" to load it.
     let systemPrompt = readFileSync(opts.promptFile, "utf8");
     if (opts.skillName) {
-      const skillFile = `${configDir}/skills/${opts.skillName}/SKILL.md`;
+      // Validate the skill name is a single directory name — no path
+      // traversal. A skill like "../../etc/evil" must never escape the
+      // trusted skills root.
+      if (!/^[a-z0-9][a-z0-9-]{0,63}$/i.test(opts.skillName)) {
+        throw new Error(
+          `invalid skill name: ${opts.skillName}. Must be a single ` +
+          `directory name (letters, digits, hyphens), no path segments.`,
+        );
+      }
+      const skillsRoot = resolve(configDir, "skills");
+      const skillDir = resolve(skillsRoot, opts.skillName);
+      const skillFile = join(skillDir, "SKILL.md");
+      // Double-check the resolved path is still under the trusted root.
+      if (!skillDir.startsWith(skillsRoot + "/") && skillDir !== skillsRoot) {
+        throw new Error(
+          `skill path escapes the trusted skills directory: ${opts.skillName}`,
+        );
+      }
       const skillContent = readFileSync(skillFile, "utf8");
       systemPrompt += `\n\n## Project-Specific Review Skill: ${opts.skillName}\n\n${skillContent}`;
     }
