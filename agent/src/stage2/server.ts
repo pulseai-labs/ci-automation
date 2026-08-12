@@ -20,6 +20,14 @@ export interface StartServerOpts {
    * uses it as the glob cwd, so tools land at `$OPENCODE_CONFIG_DIR/tools/*.ts`).
    */
   configDir: string;
+  /**
+   * The review language the `read_symbol` tool resolves its symbol pattern
+   * against (see tools/read_symbol.ts, which reads `process.env.REVIEW_LANGUAGE`
+   * with a "rust" fallback). Phase 1 always reviews Rust; Phase 4+ will derive
+   * this from language detection in stage 1. Setting it here makes the value
+   * explicit on the process env for the spawned server child.
+   */
+  reviewLanguage?: string;
   port?: number;
   timeoutMs?: number;
 }
@@ -50,6 +58,9 @@ export async function startServer(opts: StartServerOpts): Promise<ServerHandle> 
   for (const [k, v] of Object.entries(HARDENED_ENV)) process.env[k] = v;
   // The path control. Absolute and pointing at the `.opencode` dir itself.
   process.env.OPENCODE_CONFIG_DIR = opts.configDir;
+  // The language control: read_symbol resolves its symbol-lookup regex from
+  // this (tools/read_symbol.ts). Default "rust" — Phase 1 floor.
+  process.env.REVIEW_LANGUAGE = opts.reviewLanguage ?? "rust";
 
   // Fail fast on SDK/server skew BEFORE spawning, rather than on a confusing
   // 404 mid-review. `--version` prints e.g. "1.17.8"; the SDK is pinned to

@@ -17,6 +17,14 @@ export interface ReviewOpts {
   outDir: string;
   skipCargo?: boolean;
   deadlineMs?: number;
+  /**
+   * Optional per-repo review skill identifier (e.g. "pulsedb-review"). When
+   * the default reason is used this is threaded into `ConfigOpts.skillName`,
+   * which adds the skill to `skills.paths`. Unused by `runReview` itself — the
+   * skill is baked into the injected `reason` function — but carried on the
+   * opts so a caller can record which skill a review ran under.
+   */
+  skill?: string;
   /** stage 2. Injectable so the pipeline is testable with no model. */
   reason: ReasonFn;
 }
@@ -41,16 +49,20 @@ export function defaultReason(opts: {
   promptFile: string;
   steps?: number;
   configDir?: string;
+  skillName?: string;
 }): ReasonFn {
   const configDir =
     opts.configDir ?? new URL("../.opencode", import.meta.url).pathname;
   return async (pack, repo) => {
     const handle = await startServer({
       configDir,
+      reviewLanguage: "rust", // Phase 1: always Rust. Phase 4+ reads from detection.
       config: buildConfig({
         model: opts.model,
         systemPrompt: readFileSync(opts.promptFile, "utf8"),
-        steps: opts.steps ?? 12,
+        steps: opts.steps ?? 25,
+        skillName: opts.skillName,
+        configDir,
       }),
     });
     try {
@@ -168,6 +180,7 @@ if (import.meta.main) {
       model: process.env.MODEL ?? "zai-coding-plan/glm-5.2",
       promptFile: new URL("./prompts/code-review.md", import.meta.url).pathname,
       steps: 25,
+      skillName: process.env.SKILL || undefined,
     }),
   });
   console.log(`verdict=${r.verdict} reason=${r.reason}`);

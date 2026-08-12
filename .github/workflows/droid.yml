@@ -53,6 +53,10 @@ on:
         description: 'droid model id as configured on the runner.'
         type: string
         default: 'zai-coding-plan/glm-5.2'
+      skill:
+        description: 'Optional review skill name (e.g. pulsedb-review). Empty = general review only.'
+        type: string
+        default: ''
       report-status:
         description: >-
           Post a commit status to `comment-on` at `target-ref`, making this
@@ -346,6 +350,7 @@ jobs:
           OUT_DIR: ${{ github.workspace }}/report
           BASE_REF: origin/main
           MODEL: ${{ needs.validate.outputs.model }}
+          SKILL: ${{ inputs.skill }}
         run: |
           set -uo pipefail
           unset GITHUB_TOKEN GH_TOKEN ACTIONS_ID_TOKEN_REQUEST_TOKEN ACTIONS_ID_TOKEN_REQUEST_URL

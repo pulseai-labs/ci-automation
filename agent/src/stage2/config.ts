@@ -51,7 +51,18 @@ export interface ConfigOpts {
   model: string;
   systemPrompt: string;
   /** Max agentic iterations. Maps to the SDK's `maxSteps` agent field. */
-  steps: number;
+  steps?: number;
+  /**
+   * Absolute path to the agent's `.opencode` directory. Required when
+   * `skillName` is set: `skills.paths` resolves to `${configDir}/skills/...`.
+   */
+  configDir?: string;
+  /**
+   * Optional per-repo review skill. When set, `skills.paths` is added to the
+   * config so opencode discovers the skill at `${configDir}/skills/${skillName}`.
+   * Phase 1 leaves this unset for general review.
+   */
+  skillName?: string;
 }
 
 /**
@@ -69,7 +80,7 @@ export function buildConfig(o: ConfigOpts) {
   tools["read_symbol"] = true;
   tools["grep_bounded"] = true;
 
-  return {
+  const config = {
     // Empty, so AGENTS.md / CLAUDE.md from the checkout are never injected into
     // the system prompt. (Also enforced by OPENCODE_DISABLE_PROJECT_CONFIG, but
     // defence in depth: this is the inline config channel.)
@@ -85,7 +96,7 @@ export function buildConfig(o: ConfigOpts) {
         // SDK field is `maxSteps` ("Maximum number of agentic iterations before
         // forcing text-only response"). The brief's ConfigOpts names the input
         // `steps`; the actual opencode field is `maxSteps`, not `steps`.
-        maxSteps: o.steps,
+        maxSteps: o.steps ?? 25,
         tools,
         // Defence in depth alongside the tools map. The `tools` map is the
         // authoritative capability gate: only read_symbol/grep_bounded are
@@ -115,4 +126,17 @@ export function buildConfig(o: ConfigOpts) {
       },
     },
   };
+
+  // When a per-repo skill is requested, register it under `skills.paths` so
+  // opencode discovers the SKILL.md at `${configDir}/skills/${skillName}`.
+  // Absent this block the agent runs general review only (the Phase 1 default).
+  // The cast is localised: the rest of `config` stays structurally inferred;
+  // `skills` is the one optional top-level key the SDK adds under this path.
+  if (o.skillName) {
+    (config as any).skills = {
+      paths: [`${o.configDir}/skills/${o.skillName}`],
+    };
+  }
+
+  return config;
 }
