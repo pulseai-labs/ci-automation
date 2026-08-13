@@ -331,26 +331,16 @@ jobs:
           # Set up Z.AI auth
           mkdir -p ~/.local/share/opencode
           jq -n --arg key "$ZAI_API_KEY" \
-            '{"zai-coding-plan":{"key":$key,"type":"api-key"}}' > ~/.local/share/opencode/auth.json
+            '{"zai-coding-plan":{"key":$key,"type":"api"}}' > ~/.local/share/opencode/auth.json
           chmod 600 ~/.local/share/opencode/auth.json
-          # Debug: verify the file exists and its structure (key redacted)
-          echo "=== auth.json exists: $(test -f ~/.local/share/opencode/auth.json && echo yes || echo no) ==="
-          echo "=== auth.json size: $(wc -c < ~/.local/share/opencode/auth.json) bytes ==="
-          echo "=== auth.json keys: $(jq 'keys' ~/.local/share/opencode/auth.json 2>&1) ==="
-          echo "=== HOME: $HOME ==="
-          echo "=== XDG_DATA_HOME: ${XDG_DATA_HOME:-unset} ==="
           # Pre-fetch the model catalog from models.dev. The agent sets
           # OPENCODE_DISABLE_MODELS_FETCH=1 (to prevent hangs on the Mac mini),
           # but a fresh hosted runner has no cached catalog, so without this
           # pre-fetch opencode can't resolve the provider and fails with
           # "unknown provider error". `opencode models` fetches and caches to
           # ~/.cache/opencode/models.json. Hosted runners have reliable network.
-          echo "=== fetching models catalog ==="
-          OPENCODE_DISABLE_MODELS_FETCH=0 opencode models 2>&1 | head -5 || \
+          OPENCODE_DISABLE_MODELS_FETCH=0 opencode models > /dev/null 2>&1 || \
             echo "::warning::models.dev pre-fetch failed"
-          # Verify auth.json is readable
-          echo "=== providers list ==="
-          opencode providers list 2>&1 | head -10
           echo "agent tools ready"
 
       # The custom review agent (agent/) replaces droid for code-review only.
