@@ -337,9 +337,12 @@ jobs:
           # OPENCODE_DISABLE_MODELS_FETCH=1 (to prevent hangs on the Mac mini),
           # but a fresh hosted runner has no cached catalog, so without this
           # pre-fetch opencode can't resolve the provider and fails with
-          # "unknown provider error". Hosted runners have reliable network.
-          OPENCODE_DISABLE_MODELS_FETCH=0 timeout 60 opencode auth list 2>/dev/null || \
+          # "unknown provider error". `opencode models` fetches and caches to
+          # ~/.cache/opencode/models.json. Hosted runners have reliable network.
+          OPENCODE_DISABLE_MODELS_FETCH=0 timeout 60 opencode models > /dev/null 2>&1 || \
             echo "::warning::models.dev pre-fetch failed (may still work if cached)"
+          # Verify auth.json is readable
+          opencode providers list 2>&1 | head -5
           echo "agent tools ready"
 
       # The custom review agent (agent/) replaces droid for code-review only.
