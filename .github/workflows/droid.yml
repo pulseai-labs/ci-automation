@@ -333,6 +333,13 @@ jobs:
           jq -n --arg key "$ZAI_API_KEY" \
             '{"zai-coding-plan":{"key":$key,"type":"api-key"}}' > ~/.local/share/opencode/auth.json
           chmod 600 ~/.local/share/opencode/auth.json
+          # Pre-fetch the model catalog from models.dev. The agent sets
+          # OPENCODE_DISABLE_MODELS_FETCH=1 (to prevent hangs on the Mac mini),
+          # but a fresh hosted runner has no cached catalog, so without this
+          # pre-fetch opencode can't resolve the provider and fails with
+          # "unknown provider error". Hosted runners have reliable network.
+          OPENCODE_DISABLE_MODELS_FETCH=0 timeout 60 opencode auth list 2>/dev/null || \
+            echo "::warning::models.dev pre-fetch failed (may still work if cached)"
           echo "agent tools ready"
 
       # The custom review agent (agent/) replaces droid for code-review only.
