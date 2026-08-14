@@ -194,10 +194,11 @@ jobs:
         run: |
           set -euo pipefail
           # On hosted runners there is no root mint helper; use GITHUB_TOKEN.
-          # NOTE: test via sudo — the helper is 0500 root:wheel, so a plain
-          # [ -x ] as the runner user is always false and would wrongly skip it.
-          if sudo -n test -x /usr/local/libexec/pulseai-mint-token 2>/dev/null; then
-            TOK="$(sudo -n /usr/local/libexec/pulseai-mint-token status-token "$STATUS_REPO")"
+          # Try the helper and fall back — sudoers whitelists only the exact
+          # mint-token command, so any [ -x ]/`sudo test` probe fails there,
+          # and the helper is 0500 root:wheel so a plain probe fails here.
+          TOK="$(sudo -n /usr/local/libexec/pulseai-mint-token status-token "$STATUS_REPO" 2>/dev/null)" || TOK=""
+          if [ -n "$TOK" ]; then
             trap 'curl -s -o /dev/null -X DELETE -H "Authorization: token $TOK" https://api.github.com/installation/token || true' EXIT
           else
             TOK="$GITHUB_TOKEN"
@@ -452,10 +453,11 @@ jobs:
             exit 0
           fi
           # On hosted runners there is no root mint helper; use GITHUB_TOKEN.
-          # NOTE: test via sudo — the helper is 0500 root:wheel, so a plain
-          # [ -x ] as the runner user is always false and would wrongly skip it.
-          if sudo -n test -x /usr/local/libexec/pulseai-mint-token 2>/dev/null; then
-            TOK="$(sudo -n /usr/local/libexec/pulseai-mint-token comment-token "$COMMENT_ON")"
+          # Try the helper and fall back — sudoers whitelists only the exact
+          # mint-token command, so any [ -x ]/`sudo test` probe fails there,
+          # and the helper is 0500 root:wheel so a plain probe fails here.
+          TOK="$(sudo -n /usr/local/libexec/pulseai-mint-token comment-token "$COMMENT_ON" 2>/dev/null)" || TOK=""
+          if [ -n "$TOK" ]; then
             trap 'curl -s -o /dev/null -X DELETE -H "Authorization: token $TOK" https://api.github.com/installation/token || true' EXIT
           else
             TOK="$GITHUB_TOKEN"
@@ -606,10 +608,11 @@ jobs:
           fi
 
           # On hosted runners there is no root mint helper; use GITHUB_TOKEN.
-          # NOTE: test via sudo — the helper is 0500 root:wheel, so a plain
-          # [ -x ] as the runner user is always false and would wrongly skip it.
-          if sudo -n test -x /usr/local/libexec/pulseai-mint-token 2>/dev/null; then
-            TOK="$(sudo -n /usr/local/libexec/pulseai-mint-token status-token "$STATUS_REPO")"
+          # Try the helper and fall back — sudoers whitelists only the exact
+          # mint-token command, so any [ -x ]/`sudo test` probe fails there,
+          # and the helper is 0500 root:wheel so a plain probe fails here.
+          TOK="$(sudo -n /usr/local/libexec/pulseai-mint-token status-token "$STATUS_REPO" 2>/dev/null)" || TOK=""
+          if [ -n "$TOK" ]; then
             trap 'curl -s -o /dev/null -X DELETE -H "Authorization: token $TOK" https://api.github.com/installation/token || true' EXIT
           else
             TOK="$GITHUB_TOKEN"
