@@ -4,6 +4,15 @@ How to add a droid automation pipeline (QA, code review, security audit) to a
 project in `pulseai-labs`. Written for an agent or operator doing this without
 prior context.
 
+> **2026-08 update — code review has changed.** The `code-review` automation
+> now runs a purpose-built agent (`agent/` in this repo) on opencode + glm-5.2,
+> NOT droid. Droid still serves `qa` and `security-audit`. For onboarding a
+> dual-repo pair to code review, the step-by-step is the `onboard-dual-repo`
+> skill (Factory personal skills) — it carries the exact workflow templates,
+> the permissions block that prevents `startup_failure`, and every failure
+> mode hit in production. This file remains the architecture rationale and the
+> reference for qa/security-audit.
+
 ## Step zero — read ground truth, do not trust this file for facts
 
 ```bash
