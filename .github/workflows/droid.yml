@@ -20,10 +20,6 @@ name: Droid Automation
 
 on:
   workflow_call:
-    secrets:
-      zai_api_key:
-        description: 'Z.AI API key for opencode auth. Required when runner is not self-hosted.'
-        required: false
     inputs:
       automations:
         description: 'Comma-separated: qa, code-review, security-audit'
@@ -55,6 +51,10 @@ on:
         default: 'zai-coding-plan/glm-5.2'
       skill:
         description: 'Optional review skill name (e.g. pulsedb-review). Empty = general review only.'
+        type: string
+        default: ''
+      zai-api-key:
+        description: 'Z.AI API key for opencode auth. Required when runner is not self-hosted.'
         type: string
         default: ''
       report-status:
@@ -306,7 +306,7 @@ jobs:
         if: matrix.automation == 'code-review' && inputs.runner != 'self-hosted'
         shell: bash
         env:
-          ZAI_API_KEY: ${{ secrets.zai_api_key }}
+          ZAI_API_KEY: ${{ inputs.zai-api-key }}
           OPENCODE_VERSION: '1.17.8'
         run: |
           set -euo pipefail
