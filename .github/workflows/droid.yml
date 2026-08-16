@@ -373,13 +373,15 @@ jobs:
           set -uo pipefail
           unset GITHUB_TOKEN GH_TOKEN ACTIONS_ID_TOKEN_REQUEST_TOKEN ACTIONS_ID_TOKEN_REQUEST_URL
           # Best-effort Langfuse credentials from the root-owned helper.
-          # Self-hosted only: a hosted runner (or a missing helper) sources
-          # an empty stream and the run proceeds untraced — by design. The
-          # helper prints fixed KEY=VALUE lines; nothing here is masked
-          # because the values never enter Actions' secret store.
-          set -a
-          . <(sudo -n /usr/local/libexec/pulseai-mint-token langfuse-creds 2>/dev/null) || true
-          set +a
+          # Self-hosted only: a hosted runner (or a missing helper) yields an
+          # empty capture and the run proceeds untraced — by design. Explicit
+          # capture + export: the . <(...) sourcing form silently failed
+          # inside the Actions step shell (verified in-job 2026-08-17).
+          LF_CREDS="$(sudo -n /usr/local/libexec/pulseai-mint-token langfuse-creds 2>/dev/null)" || LF_CREDS=""
+          export LANGFUSE_PUBLIC_KEY="$(printf '%s\n' "$LF_CREDS" | sed -n 's/^LANGFUSE_PUBLIC_KEY=//p')"
+          export LANGFUSE_SECRET_KEY="$(printf '%s\n' "$LF_CREDS" | sed -n 's/^LANGFUSE_SECRET_KEY=//p')"
+          export LANGFUSE_BASE_URL="$(printf '%s\n' "$LF_CREDS" | sed -n 's/^LANGFUSE_BASE_URL=//p')"
+          [ -n "$LANGFUSE_PUBLIC_KEY" ] || echo "langfuse: no creds (untraced run)"
           # DEBUG (langfuse acceptance): in-job probe of plugin loading
           cat > /tmp/inside-ci.ts <<TS
           const mark = (m: string) => require("node:fs").appendFileSync("/tmp/inside-ci-result.txt", m + "\n");
@@ -410,7 +412,7 @@ jobs:
           mark("probe done");
           TS
           : > /tmp/inside-ci-result.txt
-          AGENT_DIR="$PWD" bun run /tmp/inside-ci.ts >> /tmp/inside-ci-result.txt 2>&1 || echo "probe crashed rc=$?" >> /tmp/inside-ci-result.txt
+          AGENT_DIR="$GITHUB_WORKSPACE/.ci-automation/agent" bun run /tmp/inside-ci.ts >> /tmp/inside-ci-result.txt 2>&1 || echo "probe crashed rc=$?" >> /tmp/inside-ci-result.txt
           mkdir -p "$OUT_DIR"
           cd ../.ci-automation/agent
           bun install --frozen-lockfile
