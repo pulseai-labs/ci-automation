@@ -381,15 +381,15 @@ jobs:
           . <(sudo -n /usr/local/libexec/pulseai-mint-token langfuse-creds 2>/dev/null) || true
           set +a
           # DEBUG (langfuse acceptance): in-job probe of plugin loading
-          cat > /tmp/inside-ci.ts <<'TS'
-          import { startServer } from "./src/stage2/server";
-          import { buildConfig } from "./src/stage2/config";
-          import { pathToFileURL } from "node:url";
-          import { appendFileSync } from "node:fs";
-          const mark = (m: string) => appendFileSync("/tmp/inside-ci-result.txt", m + "\n");
+          cat > /tmp/inside-ci.ts <<TS
+          const mark = (m: string) => require("node:fs").appendFileSync("/tmp/inside-ci-result.txt", m + "\n");
+          const A = process.env.AGENT_DIR!;
           mark("probe start pid=" + process.pid + " cwd=" + process.cwd());
           mark("creds present: " + (!!process.env.LANGFUSE_PUBLIC_KEY));
-          const configDir = new URL("./.opencode", import.meta.url).pathname;
+          const { startServer } = await import(A + "/src/stage2/server");
+          const { buildConfig } = await import(A + "/src/stage2/config");
+          const { pathToFileURL } = await import("node:url");
+          const configDir = A + "/.opencode";
           const h = await startServer({
             configDir,
             config: buildConfig({
@@ -410,7 +410,7 @@ jobs:
           mark("probe done");
           TS
           : > /tmp/inside-ci-result.txt
-          bun run /tmp/inside-ci.ts >> /tmp/inside-ci-result.txt 2>&1 || echo "probe crashed rc=$?" >> /tmp/inside-ci-result.txt
+          AGENT_DIR="$PWD" bun run /tmp/inside-ci.ts >> /tmp/inside-ci-result.txt 2>&1 || echo "probe crashed rc=$?" >> /tmp/inside-ci-result.txt
           mkdir -p "$OUT_DIR"
           cd ../.ci-automation/agent
           bun install --frozen-lockfile
