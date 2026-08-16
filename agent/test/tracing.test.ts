@@ -104,3 +104,13 @@ test("buildConfig enables experimental.openTelemetry for the Langfuse plugin", (
   const c: any = buildConfig({ model: "zai-coding-plan/glm-5.2", systemPrompt: "P", steps: 4 });
   expect(c.experimental).toEqual({ openTelemetry: true });
 });
+
+test("buildConfig registers the plugin as an explicit path spec when given, empty array when not", () => {
+  const withEntry: any = buildConfig({
+    model: "m", systemPrompt: "P",
+    pluginEntry: "file:///abs/path/agent/.opencode/plugin/langfuse.ts",
+  });
+  expect(withEntry.plugin).toEqual(["file:///abs/path/agent/.opencode/plugin/langfuse.ts"]);
+  const without: any = buildConfig({ model: "m", systemPrompt: "P" });
+  expect(without.plugin).toEqual([]);
+});

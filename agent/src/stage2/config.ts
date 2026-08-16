@@ -84,6 +84,17 @@ export interface ConfigOpts {
   systemPrompt: string;
   /** Max agentic iterations. Maps to the SDK's `maxSteps` agent field. */
   steps?: number;
+  /**
+   * Absolute path (or file:// URL) of the Langfuse plugin entry to register
+   * through the inline config's `plugin` array. The file-based scan of
+   * $OPENCODE_CONFIG_DIR/plugin/ works in development but proved unreliable
+   * inside the CI job environment (the entry was never imported there —
+   * probe + e2e evidence, 2026-08-17); the inline-config channel is the one
+   * surface verified to load in CI (the code-review agent itself arrives
+   * that way). Path specs (file:// …) are first-class opencode plugin specs
+   * and are NOT resolved from npm, so this stays offline-safe.
+   */
+  pluginEntry?: string;
 }
 
 /**
@@ -105,6 +116,10 @@ export function buildConfig(o: ConfigOpts) {
     // Required by the Langfuse plugin's documented setup (the plugin only
     // warns without it, but we follow the documented contract).
     experimental: { openTelemetry: true } as const,
+    // Registered as an explicit path spec — see ConfigOpts.pluginEntry.
+    // Sorted to a stable shape: absent → empty array (never undefined), so
+    // the config JSON is deterministic either way.
+    plugin: o.pluginEntry ? [o.pluginEntry] : [],
     // Empty, so AGENTS.md / CLAUDE.md from the checkout are never injected into
     // the system prompt. (Also enforced by OPENCODE_DISABLE_PROJECT_CONFIG, but
     // defence in depth: this is the inline config channel.)

@@ -1,5 +1,6 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import type { EvidencePack, Finding, ReviewResult, Usage } from "./types";
 import { gather } from "./stage1";
 import { finalize, renderReport } from "./stage3";
@@ -88,6 +89,11 @@ export function defaultReason(opts: {
         model: opts.model,
         systemPrompt,
         steps: opts.steps ?? 25,
+        // Register the Langfuse plugin through the inline config channel —
+        // the file-scan of the config dir proved unreliable inside CI jobs
+        // (see ConfigOpts.pluginEntry). A file:// path spec is first-class
+        // and never touches npm.
+        pluginEntry: pathToFileURL(join(configDir, "plugin", "langfuse.ts")).href,
       }),
     });
     try {
