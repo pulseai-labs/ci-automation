@@ -1309,6 +1309,28 @@ const makePluginVersionSpanProcessor = () =>
     forceFlush: () => Promise.resolve(),
   }) satisfies SpanProcessor;
 
+// VENDORED PATCH (see VENDORED.md #2): Langfuse makes traces filterable
+// only via the `langfuse.trace.tags` (string[]) span attribute; upstream
+// never sets it. Tags come from LANGFUSE_TRACE_REPO / LANGFUSE_TRACE_PR,
+// set by the CI workflow per run.
+export const traceTagsFromEnv = (
+  env: Record<string, string | undefined>,
+): string[] =>
+  [
+    env.LANGFUSE_TRACE_REPO,
+    env.LANGFUSE_TRACE_PR ? `pr-${env.LANGFUSE_TRACE_PR}` : undefined,
+  ].filter((t): t is string => Boolean(t));
+
+export const makeTraceTagsSpanProcessor = (tags: string[]) =>
+  ({
+    onStart: (span: Span, _parentContext: unknown) => {
+      span.setAttribute("langfuse.trace.tags", tags);
+    },
+    onEnd: (_span: ReadableSpan) => {},
+    shutdown: () => Promise.resolve(),
+    forceFlush: () => Promise.resolve(),
+  }) satisfies SpanProcessor;
+
 // Langfuse's OTEL processor may auto-mark exported spans as app roots, this overrides that.
 const makeAppRootSpanProcessor = (tracerName: string) =>
   ({
@@ -1333,6 +1355,8 @@ export const createLangfuseClient = (input: {
   baseUrl: string;
   environment: string;
   userId?: string;
+  // VENDORED PATCH (see VENDORED.md #2/#3)
+  traceTags?: string[];
 }) =>
   Effect.gen(function* () {
     const tracerName = "opencode-langfuse-plugin";
@@ -1371,6 +1395,8 @@ export const createLangfuseClient = (input: {
       spanProcessors: [
         makePluginVersionSpanProcessor(),
         ...(input.userId ? [makeUserIdSpanProcessor(input.userId)] : []),
+        // VENDORED PATCH (see VENDORED.md #2)
+        ...(input.traceTags?.length ? [makeTraceTagsSpanProcessor(input.traceTags)] : []),
         processor,
         makeAppRootSpanProcessor(traceState.tracerName),
       ],

@@ -8,6 +8,7 @@ import { Data, Effect, Layer, Schema } from "effect";
 import {
   LangfuseClientService,
   createLangfuseClient,
+  traceTagsFromEnv,
   type LangfuseClient,
   type ToolDefinition,
 } from "./langfuse.js";
@@ -380,12 +381,16 @@ const main = Effect.gen(function* () {
 
     const userId = credentials.userId ?? process.env.LANGFUSE_USER_ID;
 
+    // VENDORED PATCH (see VENDORED.md #3)
+    const traceTags = traceTagsFromEnv(process.env);
+
     return yield* createLangfuseClient({
       publicKey: credentials.publicKey,
       secretKey: credentials.secretKey,
       baseUrl,
       environment,
       userId,
+      traceTags,
     });
   }).pipe(
     Effect.tap((client) =>
