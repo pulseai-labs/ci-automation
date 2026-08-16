@@ -11,23 +11,32 @@
  * inside the CI environment (probe evidence: the e2e run completed with no
  * trace and no diagnostic line).
  */
+import { appendFileSync } from "node:fs";
+
 type PluginInput = { client: any; [key: string]: any };
 
-async function appLog(input: PluginInput, level: "info" | "error", message: string) {
+/** File-based diagnostics: app.log needs a live client, which an import
+ *  failure may itself prevent — the only channel guaranteed to work is a
+ *  file. Marker path is fixed and survives the workspace wipe. */
+function mark(msg: string) {
   try {
-    await input?.client?.app?.log?.({ body: { service: "langfuse", level, message } });
+    appendFileSync("/tmp/langfuse-plugin-load.log", `${new Date().toISOString()} ${msg}\n`);
   } catch {
-    // Logging must never break the degrade path.
+    // Diagnostics must never break the degrade path.
   }
 }
 
 export default async function langfusePlugin(input: PluginInput) {
+  mark("entry invoked");
   try {
     const mod: any = await import("../../vendor/opencode-langfuse/src/index.js");
     const plugin = mod.default ?? mod.LangfusePlugin;
-    return await plugin(input);
+    const hooks = await plugin(input);
+    mark("vendored plugin initialized");
+    return hooks;
   } catch (e) {
-    await appLog(input, "error", `plugin load failed: ${(e as any)?.message ?? String(e)}`);
+    const err = e as any;
+    mark(`LOAD FAILED: ${err?.message ?? String(e)}\n${err?.stack ?? ""}`);
     return {};
   }
 }
