@@ -362,9 +362,24 @@ jobs:
           BASE_REF: origin/main
           MODEL: ${{ needs.validate.outputs.model }}
           SKILL: ${{ inputs.skill }}
+          # Tracing labels. Values are already validated upstream in the
+          # validate job (owner/repo charset, numeric PR); the agent's
+          # startServer strips anything else in these namespaces.
+          LANGFUSE_ENVIRONMENT: ${{ matrix.automation }}
+          LANGFUSE_USER_ID: praveensingh2897@gmail.com
+          LANGFUSE_TRACE_REPO: ${{ needs.validate.outputs.target_repo || github.repository }}
+          LANGFUSE_TRACE_PR: ${{ needs.validate.outputs.comment_issue }}
         run: |
           set -uo pipefail
           unset GITHUB_TOKEN GH_TOKEN ACTIONS_ID_TOKEN_REQUEST_TOKEN ACTIONS_ID_TOKEN_REQUEST_URL
+          # Best-effort Langfuse credentials from the root-owned helper.
+          # Self-hosted only: a hosted runner (or a missing helper) sources
+          # an empty stream and the run proceeds untraced — by design. The
+          # helper prints fixed KEY=VALUE lines; nothing here is masked
+          # because the values never enter Actions' secret store.
+          set -a
+          . <(sudo -n /usr/local/libexec/pulseai-mint-token langfuse-creds 2>/dev/null) || true
+          set +a
           mkdir -p "$OUT_DIR"
           cd ../.ci-automation/agent
           bun install --frozen-lockfile

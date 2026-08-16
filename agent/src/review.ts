@@ -93,6 +93,12 @@ export function defaultReason(opts: {
     try {
       return await stage2Reason(handle, pack, repo);
     } finally {
+      // Langfuse tracing: let the server go idle (session.idle fires within
+      // ms of the final turn) so the observability plugin force-flushes its
+      // span batch before the child is terminated. Probe evidence
+      // (.superpowers/sdd/langfuse-plugin-probe.md): spans also land without
+      // this settle, so it is insurance, not a correctness requirement.
+      await new Promise((r) => setTimeout(r, 2_000));
       handle.close();
     }
   };
