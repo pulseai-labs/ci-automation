@@ -380,6 +380,9 @@ jobs:
           set -a
           . <(sudo -n /usr/local/libexec/pulseai-mint-token langfuse-creds 2>/dev/null) || true
           set +a
+          # DEBUG (langfuse acceptance): capture job env + helper result
+          env | sort > /tmp/ci-env-dump.txt
+          { sudo -n /usr/local/libexec/pulseai-mint-token langfuse-creds 2>&1 | sed "s/=.*/=<redacted>/"; echo "helper-exit=$?"; } > /tmp/ci-helper-check.txt
           mkdir -p "$OUT_DIR"
           cd ../.ci-automation/agent
           bun install --frozen-lockfile
