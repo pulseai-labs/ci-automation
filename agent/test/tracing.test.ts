@@ -54,3 +54,46 @@ test("makeTraceTagsSpanProcessor stamps langfuse.trace.tags on every span start"
   await p.shutdown();
   await p.forceFlush();
 });
+
+import { TRACING_ENV_KEYS, applyTracingEnv } from "../src/stage2/config";
+
+test("TRACING_ENV_KEYS is exactly the seven sanctioned tracing variables", () => {
+  expect([...TRACING_ENV_KEYS].sort()).toEqual([
+    "LANGFUSE_BASE_URL",
+    "LANGFUSE_ENVIRONMENT",
+    "LANGFUSE_PUBLIC_KEY",
+    "LANGFUSE_SECRET_KEY",
+    "LANGFUSE_TRACE_PR",
+    "LANGFUSE_TRACE_REPO",
+    "LANGFUSE_USER_ID",
+  ]);
+});
+
+test("applyTracingEnv keeps the sanctioned vars and strips every other LANGFUSE_*/OTEL_* var", () => {
+  const env: Record<string, string | undefined> = {
+    LANGFUSE_PUBLIC_KEY: "pk", LANGFUSE_SECRET_KEY: "sk", LANGFUSE_BASE_URL: "http://x",
+    LANGFUSE_ENVIRONMENT: "code-review", LANGFUSE_USER_ID: "u@example.com",
+    LANGFUSE_TRACE_REPO: "owner/repo", LANGFUSE_TRACE_PR: "66",
+    LANGFUSE_BASEURL: "http://legacy",          // legacy alias — NOT sanctioned
+    LANGFUSE_TRACING_ENABLED: "1",              // not part of the contract
+    OTEL_EXPORTER_OTLP_ENDPOINT: "http://evil", // must not redirect export
+    OTEL_SDK_DISABLED: "true",
+    ZAI_API_KEY: "keep-me",                     // unrelated — untouched
+    PATH: "/bin",
+  };
+  const out = applyTracingEnv(env);
+  expect(out).toBe(env); // mutates in place, returns the same object
+  expect(out.LANGFUSE_PUBLIC_KEY).toBe("pk");
+  expect(out.LANGFUSE_TRACE_PR).toBe("66");
+  expect(out.LANGFUSE_BASEURL).toBeUndefined();
+  expect(out.LANGFUSE_TRACING_ENABLED).toBeUndefined();
+  expect(out.OTEL_EXPORTER_OTLP_ENDPOINT).toBeUndefined();
+  expect(out.OTEL_SDK_DISABLED).toBeUndefined();
+  expect(out.ZAI_API_KEY).toBe("keep-me");
+  expect(out.PATH).toBe("/bin");
+});
+
+test("applyTracingEnv with no tracing vars present is a no-op", () => {
+  const env: Record<string, string | undefined> = { HOME: "/h" };
+  expect(applyTracingEnv(env)).toEqual({ HOME: "/h" });
+});
