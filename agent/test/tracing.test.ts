@@ -97,3 +97,10 @@ test("applyTracingEnv with no tracing vars present is a no-op", () => {
   const env: Record<string, string | undefined> = { HOME: "/h" };
   expect(applyTracingEnv(env)).toEqual({ HOME: "/h" });
 });
+
+import { buildConfig } from "../src/stage2/config";
+
+test("buildConfig enables experimental.openTelemetry for the Langfuse plugin", () => {
+  const c: any = buildConfig({ model: "zai-coding-plan/glm-5.2", systemPrompt: "P", steps: 4 });
+  expect(c.experimental).toEqual({ openTelemetry: true });
+});

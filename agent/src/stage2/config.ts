@@ -102,6 +102,9 @@ export function buildConfig(o: ConfigOpts) {
   tools["grep_bounded"] = true;
 
   const config = {
+    // Required by the Langfuse plugin's documented setup (the plugin only
+    // warns without it, but we follow the documented contract).
+    experimental: { openTelemetry: true } as const,
     // Empty, so AGENTS.md / CLAUDE.md from the checkout are never injected into
     // the system prompt. (Also enforced by OPENCODE_DISABLE_PROJECT_CONFIG, but
     // defence in depth: this is the inline config channel.)
