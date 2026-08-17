@@ -17,6 +17,12 @@
    `langfuse.trace.tags` span attribute, which upstream never sets).
 3. `src/index.ts` — computes `traceTags` from `LANGFUSE_TRACE_REPO` /
    `LANGFUSE_TRACE_PR` and passes them into `createLangfuseClient`.
+4. `src/langfuse.ts` — generation spans additionally carry the GenAI
+   semantic-convention attributes (`gen_ai.request.model`, `gen_ai.system`,
+   `gen_ai.usage.*`) via `genAiObservationAttributes`, and
+   `langfuse.observation.cost_details` is OMITTED when the cost is 0 — an
+   explicit zero-cost override suppresses price computation from the
+   project's custom model price table.
 
 ## Rebase procedure
 

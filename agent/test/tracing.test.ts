@@ -114,3 +114,17 @@ test("buildConfig registers the plugin as an explicit path spec when given, empt
   const without: any = buildConfig({ model: "m", systemPrompt: "P" });
   expect(without.plugin).toEqual([]);
 });
+
+test("genAiObservationAttributes emits model/usage conventions and callers drop zero-cost overrides", async () => {
+  const { genAiObservationAttributes } = await import("../vendor/opencode-langfuse/src/langfuse.ts");
+  const attrs = genAiObservationAttributes({
+    model: "glm-5.2", providerID: "zai-coding-plan",
+    tokens: { input: 100, output: 20, reasoning: 5 },
+  });
+  expect(attrs["gen_ai.request.model"]).toBe("glm-5.2");
+  expect(attrs["gen_ai.response.model"]).toBe("glm-5.2");
+  expect(attrs["gen_ai.system"]).toBe("zai-coding-plan");
+  expect(attrs["gen_ai.usage.input_tokens"]).toBe("100");
+  expect(attrs["gen_ai.usage.output_tokens"]).toBe("20");
+  expect(attrs["gen_ai.usage.total_tokens"]).toBe("125");
+});

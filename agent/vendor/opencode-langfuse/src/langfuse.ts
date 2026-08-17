@@ -621,10 +621,27 @@ export class LangfuseClient {
             input.tokens.input + input.tokens.output + input.tokens.reasoning,
         }),
       );
-      step.span.setAttribute(
-        "langfuse.observation.cost_details",
-        JSON.stringify({ total: input.cost }),
-      );
+      // VENDORED PATCH #4: GenAI attrs + no zero-cost override.
+      for (const [k, v] of Object.entries(
+        genAiObservationAttributes({
+          model: input.modelID,
+          providerID: input.providerID,
+          tokens: {
+            input: input.tokens.input,
+            output: input.tokens.output,
+            reasoning: input.tokens.reasoning,
+          },
+          cost: input.cost,
+        }),
+      )) {
+        step.span.setAttribute(k, v);
+      }
+      if (input.cost > 0) {
+        step.span.setAttribute(
+          "langfuse.observation.cost_details",
+          JSON.stringify({ total: input.cost }),
+        );
+      }
       step.span.setAttribute(
         "langfuse.observation.metadata",
         JSON.stringify({
@@ -681,9 +698,10 @@ export class LangfuseClient {
               input.tokens.total ??
               input.tokens.input + input.tokens.output + input.tokens.reasoning,
           }),
-          "langfuse.observation.cost_details": JSON.stringify({
-            total: input.cost,
-          }),
+          ...(input.cost > 0
+            ? // VENDORED PATCH #4: never send an explicit zero-cost override.
+              { "langfuse.observation.cost_details": JSON.stringify({ total: input.cost }) }
+            : {}),
           "langfuse.observation.metadata": JSON.stringify({
             messageID: input.messageID,
             parentID: input.parentID,
@@ -695,6 +713,21 @@ export class LangfuseClient {
         },
         startTime: new Date(input.created),
       });
+      // VENDORED PATCH #4: GenAI-convention attrs on this path too.
+      for (const [k, v] of Object.entries(
+        genAiObservationAttributes({
+          model: input.modelID,
+          providerID: input.providerID,
+          tokens: {
+            input: input.tokens.input,
+            output: input.tokens.output,
+            reasoning: input.tokens.reasoning,
+          },
+          cost: input.cost,
+        }),
+      )) {
+        span.setAttribute(k, v);
+      }
 
       this.traceState.generationParentSpans.set(input.sessionID, span);
       this.traceState.generationSpansByMessageId.set(input.messageID, span);
@@ -1320,6 +1353,37 @@ export const traceTagsFromEnv = (
     env.LANGFUSE_TRACE_REPO,
     env.LANGFUSE_TRACE_PR ? `pr-${env.LANGFUSE_TRACE_PR}` : undefined,
   ].filter((t): t is string => Boolean(t));
+
+
+// VENDORED PATCH (see VENDORED.md #4): emit the GenAI semantic-convention
+// attributes alongside the langfuse.* ones, so model + usage reach Langfuse
+// through every mapping path, and OMIT cost_details when the cost is 0 —
+// an explicit zero-cost override suppresses price computation from the
+// project's model price table (custom model prices would never apply).
+export const genAiObservationAttributes = (input: {
+  model: string;
+  providerID?: string;
+  tokens?: {
+    input: number;
+    output: number;
+    reasoning?: number;
+  };
+  cost?: number;
+}): Record<string, string> => {
+  const attrs: Record<string, string> = {
+    "gen_ai.request.model": input.model,
+    "gen_ai.response.model": input.model,
+    ...(input.providerID ? { "gen_ai.system": input.providerID } : {}),
+  };
+  if (input.tokens) {
+    const total =
+      input.tokens.input + input.tokens.output + (input.tokens.reasoning ?? 0);
+    attrs["gen_ai.usage.input_tokens"] = String(input.tokens.input);
+    attrs["gen_ai.usage.output_tokens"] = String(input.tokens.output);
+    attrs["gen_ai.usage.total_tokens"] = String(total);
+  }
+  return attrs;
+};
 
 export const makeTraceTagsSpanProcessor = (tags: string[]) =>
   ({
