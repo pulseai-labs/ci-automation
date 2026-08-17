@@ -402,8 +402,18 @@ documents, so every commit here invalidates it. Always resolve the current one:
 gh api /repos/pulseai-labs/ci-automation/commits/main --jq .sha
 ```
 
-To bump a consumer, replace the 40-char SHA on its `uses:` line with that value
-and open a PR.
+**Bumping every consumer is one command.** After any merge here, run
+`scripts/bump-consumer-pins.sh` in `draco-hub-macos-server` (add `--merge` to
+also merge the PRs). It discovers every org repo pinning this workflow, opens
+a pin-bump PR per repo, and skips repos already at the target SHA. Known
+consumers today: `pulsedb-internal`, `claude-agent-scaffolding-internal`,
+`pulse-trader-internal` — discovery is live, so the list does not need
+maintaining.
+
+**Test pins only at merged-main SHAs.** A pin to an unmerged branch SHA makes
+`github.job_workflow_sha` resolve empty, and the hub's self-checkout silently
+falls back to `main` — the workflow file runs from your pin, the agent code
+from main (trap table, 2026-08-17).
 
 ---
 
