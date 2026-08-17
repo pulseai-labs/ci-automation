@@ -387,41 +387,6 @@ jobs:
           bun install --frozen-lockfile
           bun run src/review.ts
           echo "rc=$?" >>"$GITHUB_OUTPUT"
-          # DEBUG (langfuse acceptance): post-review plugin probe — runs AFTER
-          # bun install, from inside the agent tree (no Bun auto-install
-          # ambiguity). Writes findings to /tmp for pickup over SSH.
-          cat > probe-tmp.ts <<'TS'
-          import { appendFileSync, existsSync } from "node:fs";
-          import { pathToFileURL } from "node:url";
-          import { startServer } from "./src/stage2/server";
-          import { buildConfig } from "./src/stage2/config";
-          const mark = (m: string) => appendFileSync("/tmp/inside-ci-result.txt", m + "\n");
-          const configDir = new URL("./.opencode", import.meta.url).pathname;
-          mark("entry file exists: " + existsSync(configDir + "/plugin/langfuse.ts"));
-          mark("node_modules exists: " + existsSync("./node_modules"));
-          const h = await startServer({
-            configDir,
-            config: buildConfig({
-              model: "zai-coding-plan/glm-5.2",
-              systemPrompt: "P",
-              steps: 2,
-              pluginEntry: pathToFileURL(configDir + "/plugin/langfuse.ts").href,
-            }),
-            timeoutMs: 60_000,
-          });
-          try {
-            const cfg: any = await h.client.config.get();
-            const d = cfg?.data ?? {};
-            mark("server config plugin field: " + JSON.stringify(d.plugin ?? d.plugin_origins ?? null));
-            const created: any = await h.client.session.create({ body: { title: "inside-ci-post" }, query: { directory: "/tmp" } });
-            mark("session: " + (created?.data?.id ?? "none"));
-            await new Promise(r => setTimeout(r, 6000));
-          } finally { h.close(); }
-          mark("probe done");
-          TS
-          : > /tmp/inside-ci-result.txt
-          bun run probe-tmp.ts >> /tmp/inside-ci-result.txt 2>&1 || echo "probe crashed rc=$?" >> /tmp/inside-ci-result.txt
-          rm -f probe-tmp.ts
 
       # The custom agent writes report.md and result.json into OUT_DIR. The
       # downstream Publish/Comment steps expect report/${AUTOMATION}.md, so copy

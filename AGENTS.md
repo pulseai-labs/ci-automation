@@ -327,14 +327,18 @@ when they migrate onto the agent.
 **How it is wired.** The observability plugin is vendored at
 `agent/vendor/opencode-langfuse/` (upstream
 `@langfuse/opencode-observability-plugin` v0.2.0 + three local patches —
-see its `VENDORED.md`) and loaded through a file-based entry at
-`agent/.opencode/plugin/langfuse.ts`. That path works because
-`$OPENCODE_CONFIG_DIR/plugin/*.ts` is scanned unconditionally by the
-hardened server — no change to the hardening contract. The vendored copy is
-deliberate: the npm-spec `plugin:` config entry would resolve and install
-from npm at every server spawn, network-dependent init on weak Wi-Fi (the
-failure class behind `OPENCODE_DISABLE_MODELS_FETCH`), and the tags patch
-has no upstream equivalent.
+see its `VENDORED.md`) with a degrade-safe entry at
+`agent/.opencode/plugin/langfuse.ts`. It is registered as an explicit
+`file://` path spec in the inline config (`pluginEntry` in `buildConfig`,
+set by `defaultReason`) — the config channel is the one surface verified to
+load inside CI jobs. A `file://` spec is a first-class opencode plugin spec
+and never touches npm. The vendored copy is deliberate: the npm-spec
+`plugin:` config entry would resolve and install from npm at every server
+spawn, network-dependent init on weak Wi-Fi (the failure class behind
+`OPENCODE_DISABLE_MODELS_FETCH`), and the tags patch has no upstream
+equivalent. Before close, `defaultReason` POSTs `/instance/dispose` and
+settles 3s — the plugin's dispose handler force-flushes the open turn span,
+without which the trace ROOT is lost to the SIGTERM race.
 
 **Labels.** environment = the automation kind (`qa` / `code-review` /
 `security-audit`), userId = the operator's email, tags = the target repo and
@@ -345,8 +349,12 @@ inputs. The tags ride a span processor patched into the vendored plugin
 **Credentials — never in this repo.** Keys live in a root-owned
 `/usr/local/etc/pulseai-ci/langfuse.env` (0400) on the mini, installed by
 `scripts/install-langfuse-keys.sh` in `draco-hub-macos-server`. The job
-sources them at run time from the mint helper (`langfuse-creds`
-subcommand — no arguments, cannot be widened). Rotating keys = regenerate
+captures them at run time from the mint helper (`langfuse-creds`
+subcommand — no arguments, cannot be widened) with an explicit
+`VAR="$(sudo -n …)"` + `export` per variable. Do NOT use the
+`. <(sudo -n …)` sourcing form: sudo inside process substitution silently
+fails in the Actions step shell (verified in-job — the helper works piped,
+the sourced variables never appear). Rotating keys = regenerate
 in the Langfuse UI and re-run the installer.
 
 **The env contract.** `startServer` passes EXACTLY seven `LANGFUSE_*`
@@ -471,6 +479,7 @@ not rediscover them.
 | Hard error requesting `permission-contents` on the dispatch app | It has no `contents` permission at all. Request only what the app holds. |
 | Permission added to the App but still 403 | The installation never approved the pending request. |
 | `fatal: remote error: upload-pack: not our ref` | Used `github.workflow_sha` (the CALLER's commit) where `github.job_workflow_sha` (this workflow's commit) was needed. |
+| Agent behaves like an OLD version despite a new pin | `github.job_workflow_sha` resolves EMPTY for pins to unmerged branch SHAs, and `actions/checkout` then silently falls back to `main` — the workflow FILE comes from your pin, the agent CODE from main. Cost a day of phantom debugging (2026-08-17). Only test with merged-main SHAs. |
 | Step fails with a bare exit code and no message | `curl -sf` — `-s` hides the error, `-f` hides the response body. Use `--show-error` and print the HTTP code. |
 | `curl` exit 56 mid-run | `CURLE_RECV_ERROR`. The runner is on a weak Wi-Fi link; retry transient failures. |
 | droid: "No custom models configured" | `FACTORY_HOME_OVERRIDE` must be the HOME directory, the **parent** of `.factory`. |

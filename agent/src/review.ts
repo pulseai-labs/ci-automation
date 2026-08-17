@@ -99,12 +99,22 @@ export function defaultReason(opts: {
     try {
       return await stage2Reason(handle, pack, repo);
     } finally {
-      // Langfuse tracing: let the server go idle (session.idle fires within
-      // ms of the final turn) so the observability plugin force-flushes its
-      // span batch before the child is terminated. Probe evidence
-      // (.superpowers/sdd/langfuse-plugin-probe.md): spans also land without
-      // this settle, so it is insurance, not a correctness requirement.
-      await new Promise((r) => setTimeout(r, 2_000));
+      // Langfuse tracing: the final turn span only closes when the plugin
+      // sees session-idle/dispose — a plain SIGTERM races it and the trace
+      // ROOT is lost (observed in the first e2e run: 9 child observations,
+      // no opencode.turn). Disposing the instance triggers the plugin's
+      // server.instance.disposed handler, which force-flushes every span
+      // including the open turn. Best-effort: tracing must never delay or
+      // break teardown beyond the settle.
+      try {
+        await fetch(
+          `${handle.url}/instance/dispose?directory=${encodeURIComponent(repo)}`,
+          { method: "POST" },
+        ).catch(() => {});
+        await new Promise((r) => setTimeout(r, 3_000));
+      } catch {
+        // ignore — proceed to close
+      }
       handle.close();
     }
   };
