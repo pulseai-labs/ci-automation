@@ -111,7 +111,7 @@ export function defaultReason(opts: {
           `${handle.url}/instance/dispose?directory=${encodeURIComponent(repo)}`,
           { method: "POST" },
         ).catch(() => {});
-        await new Promise((r) => setTimeout(r, 3_000));
+        await new Promise((r) => setTimeout(r, 8_000));
       } catch {
         // ignore — proceed to close
       }
