@@ -1,5 +1,5 @@
 import { createOpencodeServer, createOpencodeClient } from "@opencode-ai/sdk";
-import { HARDENED_ENV } from "./config";
+import { HARDENED_ENV, applyTracingEnv } from "./config";
 
 export interface ServerHandle {
   client: ReturnType<typeof createOpencodeClient>;
@@ -56,6 +56,10 @@ function serverBinaryVersion(): string {
 export async function startServer(opts: StartServerOpts): Promise<ServerHandle> {
   // The five string-constant controls.
   for (const [k, v] of Object.entries(HARDENED_ENV)) process.env[k] = v;
+  // Tracing: pass through EXACTLY the sanctioned LANGFUSE_* set and strip
+  // everything else in the LANGFUSE_/OTEL_ namespaces before the child
+  // inherits the environment.
+  applyTracingEnv(process.env as Record<string, string | undefined>);
   // The path control. Absolute and pointing at the `.opencode` dir itself.
   process.env.OPENCODE_CONFIG_DIR = opts.configDir;
   // The language control: read_symbol resolves its symbol-lookup regex from

@@ -38,6 +38,38 @@ export const HARDENED_ENV: Record<string, string> = {
   OPENCODE_DISABLE_LSP_DOWNLOAD: "1",
 };
 
+/**
+ * The exact set of tracing variables sanctioned to reach the spawned
+ * opencode server. Everything else in the LANGFUSE_ or OTEL_ namespaces is
+ * stripped before spawn (see applyTracingEnv): the plugin's bundled OTel
+ * stack reads standard OTEL_ knobs, and a stray one in the job environment
+ * must not silently reconfigure or redirect trace export. The legacy alias
+ * LANGFUSE_BASEURL is deliberately NOT here — we set the canonical
+ * LANGFUSE_BASE_URL only, so there is exactly one source of truth.
+ */
+export const TRACING_ENV_KEYS: readonly string[] = [
+  "LANGFUSE_PUBLIC_KEY",
+  "LANGFUSE_SECRET_KEY",
+  "LANGFUSE_BASE_URL",
+  "LANGFUSE_ENVIRONMENT",
+  "LANGFUSE_USER_ID",
+  "LANGFUSE_TRACE_REPO",
+  "LANGFUSE_TRACE_PR",
+];
+
+/** Mutate `env` in place: keep the sanctioned tracing keys, delete every
+ *  other LANGFUSE_ or OTEL_ prefixed key. Returns the same object. */
+export function applyTracingEnv(
+  env: Record<string, string | undefined>,
+): Record<string, string | undefined> {
+  for (const k of Object.keys(env)) {
+    if (!k.startsWith("LANGFUSE_") && !k.startsWith("OTEL_")) continue;
+    if (TRACING_ENV_KEYS.includes(k)) continue;
+    delete env[k];
+  }
+  return env;
+}
+
 /** Every built-in tool the reviewer must NOT have. Denylist is explicit so a
  *  future opencode release adding a new dangerous built-in does not silently
  *  grant it (the allowlist assertion in the test would still pass, but the
@@ -52,6 +84,17 @@ export interface ConfigOpts {
   systemPrompt: string;
   /** Max agentic iterations. Maps to the SDK's `maxSteps` agent field. */
   steps?: number;
+  /**
+   * Absolute path (or file:// URL) of the Langfuse plugin entry to register
+   * through the inline config's `plugin` array. The file-based scan of
+   * $OPENCODE_CONFIG_DIR/plugin/ works in development but proved unreliable
+   * inside the CI job environment (the entry was never imported there —
+   * probe + e2e evidence, 2026-08-17); the inline-config channel is the one
+   * surface verified to load in CI (the code-review agent itself arrives
+   * that way). Path specs (file:// …) are first-class opencode plugin specs
+   * and are NOT resolved from npm, so this stays offline-safe.
+   */
+  pluginEntry?: string;
 }
 
 /**
@@ -70,6 +113,13 @@ export function buildConfig(o: ConfigOpts) {
   tools["grep_bounded"] = true;
 
   const config = {
+    // Required by the Langfuse plugin's documented setup (the plugin only
+    // warns without it, but we follow the documented contract).
+    experimental: { openTelemetry: true } as const,
+    // Registered as an explicit path spec — see ConfigOpts.pluginEntry.
+    // Sorted to a stable shape: absent → empty array (never undefined), so
+    // the config JSON is deterministic either way.
+    plugin: o.pluginEntry ? [o.pluginEntry] : [],
     // Empty, so AGENTS.md / CLAUDE.md from the checkout are never injected into
     // the system prompt. (Also enforced by OPENCODE_DISABLE_PROJECT_CONFIG, but
     // defence in depth: this is the inline config channel.)

@@ -1,5 +1,6 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import type { EvidencePack, Finding, ReviewResult, Usage } from "./types";
 import { gather } from "./stage1";
 import { finalize, renderReport } from "./stage3";
@@ -88,11 +89,22 @@ export function defaultReason(opts: {
         model: opts.model,
         systemPrompt,
         steps: opts.steps ?? 25,
+        // Register the Langfuse plugin through the inline config channel —
+        // the file-scan of the config dir proved unreliable inside CI jobs
+        // (see ConfigOpts.pluginEntry). A file:// path spec is first-class
+        // and never touches npm.
+        pluginEntry: pathToFileURL(join(configDir, "plugin", "langfuse.ts")).href,
       }),
     });
     try {
       return await stage2Reason(handle, pack, repo);
     } finally {
+      // Langfuse tracing: let the server go idle (session.idle fires within
+      // ms of the final turn) so the observability plugin force-flushes its
+      // span batch before the child is terminated. Probe evidence
+      // (.superpowers/sdd/langfuse-plugin-probe.md): spans also land without
+      // this settle, so it is insurance, not a correctness requirement.
+      await new Promise((r) => setTimeout(r, 2_000));
       handle.close();
     }
   };

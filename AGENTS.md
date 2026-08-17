@@ -316,6 +316,66 @@ Everything else is automatic. These are not:
 
 ---
 
+## Langfuse tracing of the review agent
+
+Every `code-review` run of the custom agent traces to a dedicated
+**`ci-automation`** project on the Langfuse instance self-hosted on the mini
+(same machine as the runner, so ingestion is loopback). `qa` and
+`security-audit` still run droid and are NOT traced; they inherit tracing
+when they migrate onto the agent.
+
+**How it is wired.** The observability plugin is vendored at
+`agent/vendor/opencode-langfuse/` (upstream
+`@langfuse/opencode-observability-plugin` v0.2.0 + three local patches —
+see its `VENDORED.md`) and loaded through a file-based entry at
+`agent/.opencode/plugin/langfuse.ts`. That path works because
+`$OPENCODE_CONFIG_DIR/plugin/*.ts` is scanned unconditionally by the
+hardened server — no change to the hardening contract. The vendored copy is
+deliberate: the npm-spec `plugin:` config entry would resolve and install
+from npm at every server spawn, network-dependent init on weak Wi-Fi (the
+failure class behind `OPENCODE_DISABLE_MODELS_FETCH`), and the tags patch
+has no upstream equivalent.
+
+**Labels.** environment = the automation kind (`qa` / `code-review` /
+`security-audit`), userId = the operator's email, tags = the target repo and
+`pr-<n>` — set from the workflow's validated outputs, never from raw
+inputs. The tags ride a span processor patched into the vendored plugin
+(`langfuse.trace.tags` is the only tag channel Langfuse makes filterable).
+
+**Credentials — never in this repo.** Keys live in a root-owned
+`/usr/local/etc/pulseai-ci/langfuse.env` (0400) on the mini, installed by
+`scripts/install-langfuse-keys.sh` in `draco-hub-macos-server`. The job
+sources them at run time from the mint helper (`langfuse-creds`
+subcommand — no arguments, cannot be widened). Rotating keys = regenerate
+in the Langfuse UI and re-run the installer.
+
+**The env contract.** `startServer` passes EXACTLY seven `LANGFUSE_*`
+variables to the spawned server and strips every other `LANGFUSE_*` /
+`OTEL_*` variable from the child environment (`TRACING_ENV_KEYS` +
+`applyTracingEnv` in `agent/src/stage2/config.ts`, both unit-tested). Do
+not add tracing knobs by loosening this — widen the allowlist explicitly or
+not at all.
+
+**Degrade behavior — three layers, all deliberate.** Missing helper or
+hosted runner → the workflow step sources an empty stream and runs
+untraced. Vendored import failure → the loader entry returns a no-op
+plugin. Missing credentials → the plugin itself no-ops with a warning. No
+layer can fail a review.
+
+**Traps.** The base-URL variable is `LANGFUSE_BASE_URL` (underscore) — the
+Langfuse docs page that says `LANGFUSE_BASEURL` is wrong (the plugin
+accepts both; we set only the canonical name, and the strip rule removes
+the legacy alias). The dev MacBook runs opencode 1.18.x while the pin is
+1.17.8: the Langfuse integration tests version-gate and SKIP locally — run
+them on the mini (`ssh mini`, PATH needs `~/.bun/bin` and
+`/opt/homebrew/bin`). Langfuse v4 has no v3 traces API: read observations
+via `GET /api/public/v2/observations` with **Z-suffixed** timestamps — an
+unencoded `+00:00` silently returns an empty window (this cost an hour of
+misdiagnosis; the traces had been landing all along). Probe evidence and
+API notes: `.superpowers/sdd/langfuse-plugin-probe.md` on the mini.
+
+---
+
 ## Pinning and upgrading the hub
 
 Pin `uses:` to a **full 40-character commit SHA**, never a tag or branch.
