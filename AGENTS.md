@@ -32,8 +32,11 @@ and pinned a SHA three commits stale — every one accurate when written. An age
 following it would have reproduced the exact failures it was written to prevent.
 
 Architecture and rationale live in `pulseai-labs/draco-hub-macos-server`,
-`docs/adr/0001-ci-automation-architecture.md`. Read that before changing
-anything structural. This file is the operational how-to.
+`docs/adr/0001-ci-automation-architecture.md`; a snapshot copy of that ADR,
+the original specs/plans, and the mini runbook is in this repo under
+`docs/history/` (see its README for provenance), and the dev/deploy loop is
+documented in `docs/operating-model.md`. Read those before changing anything
+structural. This file is the operational how-to.
 
 ---
 
