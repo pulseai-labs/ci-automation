@@ -496,6 +496,7 @@ not rediscover them.
 | Step fails with a bare exit code and no message | `curl -sf` — `-s` hides the error, `-f` hides the response body. Use `--show-error` and print the HTTP code. |
 | `curl` exit 56 mid-run | `CURLE_RECV_ERROR`. The runner is on a weak Wi-Fi link; retry transient failures. |
 | droid: "No custom models configured" | `FACTORY_HOME_OVERRIDE` must be the HOME directory, the **parent** of `.factory`. |
+| Review agent: `unknown provider error` | The model id is not in opencode 1.17.8's bundled catalog (any model newer than the pin). One-time fix on the mini, as the runner user: `sudo -u github-runner -H bash -c "PATH=/usr/local/bin:/opt/homebrew/bin:$PATH OPENCODE_DISABLE_MODELS_FETCH=0 opencode models"` — caches `~/.cache/opencode/models.json`, which the hardened server reads despite the fetch being disabled. Verified with the glm-5.2 → glm-5.3-flash switch (2026-08-28). |
 | Job queues forever | The repo is public — public repos cannot use the runner. Use Pattern B. |
 | PR stuck on a pending `droid/*` check | The job died before its final-status step. It runs under `always()`, so this means the runner itself vanished. Check the daemon. |
 | Required check never appears | The context name was guessed. Reusable-workflow job checks are `<caller job> / <called job>`; the commit statuses this hub posts are `droid/<automation>`. Read one from a real run first. |
