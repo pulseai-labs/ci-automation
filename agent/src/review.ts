@@ -224,7 +224,7 @@ if (import.meta.main) {
     base: process.env.BASE_REF ?? "origin/main",
     outDir: out,
     reason: defaultReason({
-      model: process.env.MODEL ?? "zai-coding-plan/glm-5.2",
+      model: process.env.MODEL ?? "zai-coding-plan/glm-5.3-flash",
       promptFile: new URL("./prompts/code-review.md", import.meta.url).pathname,
       steps: 25,
       skillName: process.env.SKILL || undefined,

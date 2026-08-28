@@ -5,7 +5,7 @@ project in `pulseai-labs`. Written for an agent or operator doing this without
 prior context.
 
 > **2026-08 update — code review has changed.** The `code-review` automation
-> now runs a purpose-built agent (`agent/` in this repo) on opencode + glm-5.2,
+> now runs a purpose-built agent (`agent/` in this repo) on opencode + glm-5.3-flash,
 > NOT droid. Droid still serves `qa` and `security-audit`. For onboarding a
 > dual-repo pair to code review, the step-by-step is the `onboard-dual-repo`
 > skill (Factory personal skills) — it carries the exact workflow templates,
